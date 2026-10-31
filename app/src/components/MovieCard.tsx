@@ -35,7 +35,7 @@ export const MovieCard: React.FC<MovieCardProps> = memo(
     return (
       <div
         onClick={() => id && onSelect(id, movie)}
-        className={`group rounded-2xl overflow-hidden cursor-pointer flex flex-col h-full transition-transform duration-200 active:scale-95 hover:-translate-y-1 ${
+        className={`group rounded-2xl overflow-hidden cursor-pointer flex flex-col h-full transition-transform duration-150 active:scale-95 ${
           compact ? 'min-w-[148px] max-w-[148px] sm:min-w-[168px] sm:max-w-[168px] lg:min-w-[180px] lg:max-w-[180px] shrink-0' : ''
         }`}
         style={{
@@ -58,7 +58,7 @@ export const MovieCard: React.FC<MovieCardProps> = memo(
             onError={(e) => {
               (e.currentTarget as HTMLImageElement).src = FALLBACK_POSTER;
             }}
-            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+            className="w-full h-full object-cover"
           />
           <div
             className="absolute inset-0 pointer-events-none"
@@ -70,7 +70,7 @@ export const MovieCard: React.FC<MovieCardProps> = memo(
 
           {/* Top Right: Type */}
           <div
-            className="absolute top-2 right-2 px-2 py-0.5 rounded-md text-[10px] font-bold text-white backdrop-blur-md"
+            className="absolute top-2 right-2 px-2 py-0.5 rounded-md text-[10px] font-bold text-white"
             style={{
               background: 'rgba(0, 0, 0, 0.62)',
               border: '1px solid rgba(255,255,255,0.14)',
@@ -132,7 +132,17 @@ export const MovieCard: React.FC<MovieCardProps> = memo(
         </div>
       </div>
     );
-  }
+  },
+  // Custom compare: onSelect is recreated on every App render,
+  // which defeated the default memo() and re-rendered every
+  // card on every keystroke/scroll state change. Compare only
+  // what actually changes the card; the tap handler reads the
+  // movie id from the card's own props at tap time.
+  (prev, next) =>
+    prev.movie === next.movie &&
+    prev.isWatched === next.isWatched &&
+    prev.watchedLabel === next.watchedLabel &&
+    prev.compact === next.compact
 );
 
 export const SkeletonGrid: React.FC<{ count?: number }> = ({ count = 10 }) => {

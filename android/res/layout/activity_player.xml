@@ -257,6 +257,40 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- Loading animation: rotating gold/purple/orange rings
+         around a pulsing gold crown, plus text below. No box
+         around it, just the animation floating over the video.
+         Shown while the film is loading/buffering, hidden as
+         soon as playback actually starts. -->
+    <LinearLayout
+        android:id="@+id/player_loading"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:visibility="gone">
+
+        <com.kralmovie.app.LoadingView
+            android:layout_width="160dp"
+            android:layout_height="160dp" />
+
+        <TextView
+            android:id="@+id/player_loading_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="در حال بارگذاری فیلم"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:shadowColor="#000000"
+            android:shadowDx="1"
+            android:shadowDy="1"
+            android:shadowRadius="4"
+            android:gravity="center" />
+    </LinearLayout>
+
     <!-- Error box -->
     <LinearLayout
         android:id="@+id/player_error_box"

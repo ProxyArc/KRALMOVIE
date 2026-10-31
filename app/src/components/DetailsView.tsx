@@ -14,6 +14,7 @@ import {
   copyText,
   extractEpisodeNumber,
   extractLinks,
+  fetchMovieLinks,
   fetchSeasons,
   getFileExt,
   movieBackdrop,
@@ -37,6 +38,11 @@ interface DetailsViewProps {
   movie: any;
   onBack: () => void;
   onOpenMoviePlayer: () => void;
+  onSelectMovieQuality: (
+    idx: number,
+    source: VideoSource,
+    allSources: VideoSource[]
+  ) => void;
   onSelectEpisodeSource: (
     url: string,
     quality: string,
@@ -55,6 +61,7 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
   movie,
   onBack,
   onOpenMoviePlayer,
+  onSelectMovieQuality,
   onSelectEpisodeSource,
   watchedData,
   onToggleEpisodeManual,
@@ -76,17 +83,66 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
   const [seasons, setSeasons] = useState<any[]>([]);
   const [loadingSeasons, setLoadingSeasons] = useState(false);
   const [seasonsVisible, setSeasonsVisible] = useState(false);
-  const [openSeasonMap, setOpenSeasonMap] = useState<Record<number, boolean>>({ 0: true });
+  // Movie qualities, loaded automatically like series seasons,
+  // so a movie needs no "تماشا و انتخاب کیفیت" tap at all.
+  const [movieSources, setMovieSources] = useState<VideoSource[]>([]);
+  const [loadingMovieSources, setLoadingMovieSources] = useState(false);
+  // All seasons start closed: the user taps a season header to
+  // open the one they want, instead of season 1 always opening.
+  const [openSeasonMap, setOpenSeasonMap] = useState<Record<number, boolean>>({});
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   useEffect(() => {
     setSeasons([]);
     setSeasonsVisible(false);
-    setOpenSeasonMap({ 0: true });
+    setOpenSeasonMap({});
     if (type === 'series' && id) {
       handleLoadSeasons(id);
     }
   }, [id, type]);
+
+  // Movies: load qualities automatically on details open, like
+  // series seasons, so no button tap is needed to see them.
+  useEffect(() => {
+    if (type !== 'movie' || !id) {
+      setMovieSources([]);
+      setLoadingMovieSources(false);
+      return;
+    }
+    let cancelled = false;
+    async function loadMovieQualities() {
+      setLoadingMovieSources(true);
+      try {
+        const linksData = await fetchMovieLinks(id);
+        const fromLinks = extractLinks(linksData);
+        const fromCurrent =
+          movie && Array.isArray(movie.sources)
+            ? extractLinks(
+                movie.sources.filter(
+                  (s: any) => !String(s.quality || '').includes('تیزر')
+                )
+              )
+            : [];
+        const seen = new Set<string>();
+        const merged: VideoSource[] = [];
+        [...fromLinks, ...fromCurrent].forEach((s) => {
+          if (!s || !s.url || seen.has(s.url)) return;
+          seen.add(s.url);
+          merged.push(s);
+        });
+        if (!cancelled) setMovieSources(sortByQuality(merged));
+      } finally {
+        if (!cancelled) setLoadingMovieSources(false);
+      }
+    }
+    loadMovieQualities();
+    return () => {
+      cancelled = true;
+    };
+    // movie.sources arrive with the details fetch; reload when
+    // the movie object itself changes (cached -> merged details).
+    // fetchMovieLinks is cached, so the second run costs no API call.
+  }, [id, type, movie]);
 
   async function handleLoadSeasons(targetId = id) {
     if (!targetId) return;
@@ -100,9 +156,8 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
       else if (data && Array.isArray(data.items)) list = data.items;
       else if (data?.data && Array.isArray(data.data)) list = data.data;
       setSeasons(list);
-      if (list.length > 0) {
-        setOpenSeasonMap({ 0: true });
-      }
+      // Keep every season closed after loading; the user opens
+      // one by tapping its header (toggleSeasonAccordion).
     } finally {
       setLoadingSeasons(false);
     }
@@ -146,7 +201,7 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
       <div className="flex items-center justify-between gap-3 mb-4">
         <button
           onClick={onBack}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold backdrop-blur-xl transition-transform active:scale-95 cursor-pointer"
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold transition-transform active:scale-95 cursor-pointer"
           style={{
             background: 'var(--surface-2)',
             border: '1px solid var(--border)',
@@ -159,7 +214,7 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
 
         <button
           onClick={onToggleLike}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold backdrop-blur-xl transition-transform active:scale-95 cursor-pointer"
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold transition-transform active:scale-95 cursor-pointer"
           style={{
             background: isLiked ? 'rgba(255, 69, 58, 0.16)' : 'var(--surface-2)',
             border: isLiked ? '1px solid rgba(255, 69, 58, 0.45)' : '1px solid var(--border)',
@@ -179,14 +234,6 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
           border: '1px solid var(--border)',
         }}
       >
-        {/* Ambient Blur */}
-        {backdrop && (
-          <div
-            className="absolute inset-0 z-0 opacity-20 blur-[50px] scale-125 pointer-events-none bg-cover bg-center"
-            style={{ backgroundImage: `url('${backdrop}')` }}
-          />
-        )}
-
         {/* Hero Backdrop */}
         <div
           className="relative z-10 w-full h-[280px] sm:h-[360px] lg:h-[400px] overflow-hidden"
@@ -212,7 +259,7 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
           />
 
           <div
-            className="absolute top-3.5 right-3.5 z-20 px-3.5 py-1.5 rounded-full text-xs font-extrabold text-white backdrop-blur-md flex items-center gap-1.5"
+            className="absolute top-3.5 right-3.5 z-20 px-3.5 py-1.5 rounded-full text-xs font-extrabold text-white flex items-center gap-1.5"
             style={{
               background: 'rgba(0,0,0,0.55)',
               border: '1px solid rgba(255,255,255,0.16)',
@@ -317,17 +364,29 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
           {/* Primary Actions */}
           <div className="flex flex-wrap items-center justify-center gap-3 w-full mt-1">
             {type === 'movie' ? (
-              <button
-                onClick={onOpenMoviePlayer}
-                className="inline-flex items-center justify-center gap-2.5 py-3.5 px-9 rounded-full font-extrabold text-base text-white shadow-xl active:scale-95 transition-transform cursor-pointer"
-                style={{
-                  background: 'linear-gradient(135deg, var(--primary), var(--accent))',
-                  boxShadow: '0 12px 30px rgba(123, 104, 238, 0.45)',
-                }}
-              >
-                <Play className="w-5 h-5 fill-current" />
-                <span>تماشا و انتخاب کیفیت</span>
-              </button>
+              // v1.14: movie qualities load automatically below, so
+              // the old "تماشا و انتخاب کیفیت" tap is gone. Only a
+              // fallback remains when no quality was found at all.
+              loadingMovieSources ? (
+                <span
+                  className="text-xs font-extrabold"
+                  style={{ color: 'var(--secondary)' }}
+                >
+                  در حال دریافت کیفیت‌ها…
+                </span>
+              ) : movieSources.length === 0 ? (
+                <button
+                  onClick={onOpenMoviePlayer}
+                  className="inline-flex items-center justify-center gap-2.5 py-3.5 px-9 rounded-full font-extrabold text-base text-white shadow-xl active:scale-95 transition-transform cursor-pointer"
+                  style={{
+                    background: 'linear-gradient(135deg, var(--primary), var(--accent))',
+                    boxShadow: '0 12px 30px rgba(123, 104, 238, 0.45)',
+                  }}
+                >
+                  <Play className="w-5 h-5 fill-current" />
+                  <span>تماشا و انتخاب کیفیت</span>
+                </button>
+              ) : null
             ) : (
               <button
                 onClick={() => handleLoadSeasons(id)}
@@ -342,6 +401,55 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
               </button>
             )}
           </div>
+
+          {/* Movie qualities, loaded automatically like series
+              seasons: tapping one opens the player-choice modal
+              directly, with no extra screen in between. */}
+          {type === 'movie' && movieSources.length > 0 && (
+            <div className="w-full max-w-3xl mt-4">
+              <h3
+                className="text-sm font-extrabold mb-2.5"
+                style={{ color: 'var(--text)' }}
+              >
+                کیفیت‌های فیلم
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {movieSources.map((s: VideoSource, sIdx: number) => {
+                  const isWatched =
+                    !!movieWatchedInfo && movieWatchedInfo.quality === s.quality;
+                  return (
+                    <button
+                      key={sIdx}
+                      onClick={() => onSelectMovieQuality(sIdx, s, movieSources)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-extrabold transition-transform active:scale-95 cursor-pointer"
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        background: isWatched
+                          ? 'rgba(50, 215, 75, 0.20)'
+                          : 'var(--surface-2)',
+                        border: isWatched
+                          ? '1px solid rgba(50, 215, 75, 0.65)'
+                          : '1px solid var(--border-strong)',
+                        color: isWatched ? '#6EE7B7' : 'var(--text)',
+                      }}
+                    >
+                      {isWatched ? (
+                        <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      ) : (
+                        <span>▶</span>
+                      )}
+                      <span dir="ltr">{s.quality}</span>
+                      {getFileExt(s.url) && (
+                        <span className="text-[10px] opacity-75 px-1.5 py-0.2 rounded bg-black/30 uppercase">
+                          {getFileExt(s.url)}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* SEASONS & EPISODES CONTAINER */}
           {seasonsVisible && (

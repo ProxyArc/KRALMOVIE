@@ -352,6 +352,15 @@ public class MainActivity extends Activity {
         s.setLoadWithOverviewMode(true);
         s.setUseWideViewPort(true);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        // Smooth scrolling: keep the WebView on the hardware layer
+        // (manifest already sets hardwareAccelerated) and let images
+        // cache, so scrolling a long poster list does not re-decode
+        // on every frame.
+        try {
+            webView.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null);
+            webView.setOverScrollMode(android.view.View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        } catch (Throwable ignored) {
+        }
 
         webView.addJavascriptInterface(new PlayerBridge(), "AndroidPlayer");
 

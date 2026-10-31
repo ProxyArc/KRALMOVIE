@@ -575,6 +575,31 @@ export default function App() {
     });
   }
 
+  // Movie Quality Selected directly in DetailsView (no PlayerView
+  // route) -> Open External Player Choice Modal & Mark Watched.
+  // Same modal as the PlayerView flow, so tapping a quality here
+  // goes straight to choosing the player and playing.
+  function handleSelectMovieQualityDirect(
+    idx: number,
+    source: VideoSource,
+    allSources: VideoSource[]
+  ) {
+    if (!currentMovie) return;
+    const id = movieId(currentMovie);
+    setCurrentSources(allSources);
+    setActiveSourceIndex(idx);
+
+    const updated = markMovieQualityWatched(id, source.quality);
+    setWatchedData({ ...updated });
+    addToLocalHistory(currentMovie, source.quality);
+
+    setExternalModalData({
+      url: normalizeVideoUrl(source.url),
+      movieId: id,
+      quality: source.quality,
+    });
+  }
+
   // Movie Quality Option Selected in PlayerView -> Open External Player Choice Modal & Mark Watched
   function handleSelectMovieQualityOption(idx: number, source: VideoSource) {
     if (!currentMovie) return;
@@ -704,18 +729,40 @@ export default function App() {
     );
   }, [stars, starSearchQuery]);
 
+  // Watched status, precomputed once per watchedData change.
+  // Previously every card scanned ALL watched episode keys on
+  // every render (O(cards x watchedKeys)), which is what made
+  // the home/search grids lag on a phone. Now it is O(1).
+  const watchedLookup = useMemo(() => {
+    const movieIds = new Set<string>();
+    const movieQuality = new Map<string, string>();
+    const episodeCount = new Map<string, number>();
+    Object.keys(watchedData.movies || {}).forEach((k) => {
+      const id = k.split('::')[0];
+      if (id) {
+        movieIds.add(id);
+        const w: any = (watchedData.movies as any)[k];
+        if (w?.quality) movieQuality.set(id, w.quality);
+      }
+    });
+    Object.keys(watchedData.episodes || {}).forEach((k) => {
+      const id = k.split('::')[0];
+      if (id) episodeCount.set(id, (episodeCount.get(id) || 0) + 1);
+    });
+    return { movieIds, movieQuality, episodeCount };
+  }, [watchedData]);
+
   // Helper to check if a movie/series card has been watched
   function getMovieWatchedStatus(m: any): { isWatched: boolean; label?: string } {
     const id = movieId(m);
     if (!id) return { isWatched: false };
-    const movieW = watchedData.movies[`${id}::movie`];
-    if (movieW) {
-      return { isWatched: true, label: `دیده شده (${movieW.quality})` };
+    if (watchedLookup.movieIds.has(id)) {
+      const q = watchedLookup.movieQuality.get(id);
+      return { isWatched: true, label: q ? `دیده شده (${q})` : 'دیده شده' };
     }
-    // Check if any episode of this series is watched
-    const epKeys = Object.keys(watchedData.episodes).filter((k) => k.startsWith(`${id}::ep::`));
-    if (epKeys.length > 0) {
-      return { isWatched: true, label: `${epKeys.length} قسمت دیده شده` };
+    const epCount = watchedLookup.episodeCount.get(id) || 0;
+    if (epCount > 0) {
+      return { isWatched: true, label: `${epCount} قسمت دیده شده` };
     }
     return { isWatched: false };
   }
@@ -734,7 +781,7 @@ export default function App() {
 
       {/* 2. TOP HEADER */}
       <header
-        className="fixed top-0 left-0 right-0 z-40 border-b backdrop-blur-2xl"
+        className="fixed top-0 left-0 right-0 z-40 border-b"
         style={{
           background: 'var(--header-bg)',
           borderColor: 'var(--border)',
@@ -876,7 +923,7 @@ export default function App() {
           <div>
             {/* Sticky Navigation Tabs */}
             <div
-              className="sticky top-16 z-30 py-2.5 -mx-3 px-3 sm:-mx-4 sm:px-4 mb-4 border-b backdrop-blur-2xl overflow-x-auto no-scrollbar"
+              className="sticky top-16 z-30 py-2.5 -mx-3 px-3 sm:-mx-4 sm:px-4 mb-4 border-b overflow-x-auto no-scrollbar"
               style={{
                 background: 'var(--header-bg)',
                 borderColor: 'var(--border)',
@@ -994,6 +1041,7 @@ export default function App() {
                                     src={resolveImageUrl(c.image)}
                                     alt={c.title || ''}
                                     loading="lazy"
+                                    decoding="async"
                                     referrerPolicy="no-referrer"
                                     className="w-full h-full object-cover"
                                   />
@@ -1213,6 +1261,7 @@ export default function App() {
                                         src={resolveImageUrl(s.image)}
                                         alt={sName}
                                         loading="lazy"
+                                        decoding="async"
                                         referrerPolicy="no-referrer"
                                         className="w-full h-full object-cover"
                                       />
@@ -1264,7 +1313,10 @@ export default function App() {
                       const secTitle = brandFix(sec.name || 'بخش');
 
                       return (
-                        <section key={`sec-${sec.id ?? sIdx}-${sIdx}`}>
+                        <section
+                          key={`sec-${sec.id ?? sIdx}-${sIdx}`}
+                          style={{ contentVisibility: 'auto', containIntrinsicSize: '0 420px' }}
+                        >
                           <div className="flex items-center justify-between gap-3 mb-3">
                             <h2
                               className="text-base sm:text-lg font-extrabold flex items-center gap-2 truncate"
@@ -1555,6 +1607,7 @@ export default function App() {
                               src={resolveImageUrl(s.image)}
                               alt={sName}
                               loading="lazy"
+                              decoding="async"
                               referrerPolicy="no-referrer"
                               className="w-full h-full object-cover"
                             />
@@ -1640,6 +1693,7 @@ export default function App() {
             movie={currentMovie}
             onBack={goBack}
             onOpenMoviePlayer={handleOpenMoviePlayer}
+            onSelectMovieQuality={handleSelectMovieQualityDirect}
             onSelectEpisodeSource={handleSelectEpisodeSource}
             watchedData={watchedData}
             onToggleEpisodeManual={(sIdx, eIdx) => {

@@ -82,6 +82,22 @@ public class PlayerActivity extends Activity {
     private ImageView gestureIcon;
     private TextView gestureText;
     private LinearLayout errorBox;
+    private View loadingBox;
+    private TextView loadingText;
+    private int loadingDots = 0;
+    private final Runnable loadingDotsRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (loadingText != null && loadingBox != null
+                    && loadingBox.getVisibility() == View.VISIBLE) {
+                loadingDots = (loadingDots + 1) % 4;
+                StringBuilder dots = new StringBuilder();
+                for (int i = 0; i < loadingDots; i++) dots.append(".");
+                loadingText.setText("در حال بارگذاری فیلم" + dots.toString());
+                handler.postDelayed(this, 500);
+            }
+        }
+    };
     private SeekBar seekBar;
     private ImageButton playPauseButton;
     private Button ccButton;
@@ -106,11 +122,31 @@ public class PlayerActivity extends Activity {
     private int lastVideoH = 0;
     private int lastSarNum = 0;
     private int lastSarDen = 0;
+    // Pinch zoom: 1.0 = the current aspect mode's size. Pinching
+    // with two fingers scales the surface around its centre; the
+    // parent FrameLayout clips the overflow, so zooming in crops
+    // the edges instead of stretching the picture.
+    private float zoomScale = 1f;
+    private boolean pinching = false;
+    private float pinchStartDist = 0f;
+    private float pinchBaseZoom = 1f;
+    // Bug fix for pinch-then-seek: Android does NOT send a new
+    // ACTION_DOWN for the finger that stays down after the other
+    // finger lifts (ACTION_POINTER_UP). Without this flag, that
+    // finger's later movement is measured from the original
+    // downX/downY and becomes a horizontal seek, so a pinch
+    // would also jump the film forward/backward. While this is
+    // set, all moves are swallowed until a fresh ACTION_DOWN.
+    private boolean gestureSuppressed = false;
     private static final MediaPlayer.ScaleType[] ASPECTS = {
             MediaPlayer.ScaleType.SURFACE_BEST_FIT,
             MediaPlayer.ScaleType.SURFACE_FILL,
             MediaPlayer.ScaleType.SURFACE_16_9,
             MediaPlayer.ScaleType.SURFACE_4_3,
+            // Fullscreen (index 4): libVLC scale stays BestFit, but
+            // applyVideoLayout() sizes the surface to *cover* the
+            // screen, so there are no black bars at all.
+            MediaPlayer.ScaleType.SURFACE_BEST_FIT,
     };
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -179,6 +215,8 @@ public class PlayerActivity extends Activity {
         gestureIcon = findViewById(R.id.player_gesture_icon);
         gestureText = findViewById(R.id.player_gesture_text);
         errorBox = findViewById(R.id.player_error_box);
+        loadingBox = findViewById(R.id.player_loading);
+        loadingText = findViewById(R.id.player_loading_text);
         seekBar = findViewById(R.id.player_seekbar);
         playPauseButton = findViewById(R.id.player_play_pause);
         ccButton = findViewById(R.id.player_cc);
@@ -239,7 +277,28 @@ public class PlayerActivity extends Activity {
             }
         });
 
+        showLoading();
         startVlc(originalUrl);
+    }
+
+    // ---------- Loading animation ----------
+
+    private void showLoading() {
+        try {
+            if (loadingBox != null) loadingBox.setVisibility(View.VISIBLE);
+            loadingDots = 0;
+            handler.removeCallbacks(loadingDotsRunnable);
+            handler.post(loadingDotsRunnable);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void hideLoading() {
+        try {
+            handler.removeCallbacks(loadingDotsRunnable);
+            if (loadingBox != null) loadingBox.setVisibility(View.GONE);
+        } catch (Throwable ignored) {
+        }
     }
 
     // ---------- libVLC ----------
@@ -247,6 +306,7 @@ public class PlayerActivity extends Activity {
     private void startVlc(String url) {
         releaseExo();
         useVlc = true;
+        showLoading();
         try {
             ArrayList<String> options = new ArrayList<>();
             options.add("--no-video-title-show");
@@ -281,7 +341,15 @@ public class PlayerActivity extends Activity {
     private void onVlcEvent(MediaPlayer.Event event) {
         if (event == null) return;
         switch (event.type) {
+            case MediaPlayer.Event.Opening:
+                showLoading();
+                break;
+            case MediaPlayer.Event.Buffering:
+                if (event.getBuffering() < 100f) showLoading();
+                else hideLoading();
+                break;
             case MediaPlayer.Event.Playing:
+                hideLoading();
                 hideError();
                 handler.removeCallbacks(progressRunnable);
                 handler.post(progressRunnable);
@@ -291,6 +359,7 @@ public class PlayerActivity extends Activity {
             case MediaPlayer.Event.Paused:
             case MediaPlayer.Event.Stopped:
             case MediaPlayer.Event.EndReached:
+                hideLoading();
                 updatePlayButton();
                 break;
             case MediaPlayer.Event.LengthChanged:
@@ -366,6 +435,7 @@ public class PlayerActivity extends Activity {
     private void startExo(String url) {
         exoStarted = true;
         useVlc = false;
+        showLoading();
         subtitleView.setVisibility(View.GONE);
         try {
             trackSelector = new DefaultTrackSelector(this);
@@ -404,10 +474,15 @@ public class PlayerActivity extends Activity {
                 @Override
                 public void onPlaybackStateChanged(int state) {
                     updatePlayButton();
-                    if (state == Player.STATE_READY) {
+                    if (state == Player.STATE_BUFFERING) {
+                        showLoading();
+                    } else if (state == Player.STATE_READY) {
+                        hideLoading();
                         hideError();
                         handler.post(progressRunnable);
                         resetHideTimer();
+                    } else if (state == Player.STATE_IDLE || state == Player.STATE_ENDED) {
+                        hideLoading();
                     }
                 }
 
@@ -724,13 +799,32 @@ public class PlayerActivity extends Activity {
                     return;
                 }
                 double screenAspect = (double) screenW / screenH;
-                if (targetAspect > screenAspect) {
+                if (aspectIndex == 4) {
+                    // Fullscreen: cover the whole screen, no black
+                    // bars. Scale up until both dimensions cover the
+                    // screen, then centre-crop the overflow.
+                    if (targetAspect > screenAspect) {
+                        h = screenH;
+                        w = (int) (screenH * targetAspect);
+                    } else {
+                        w = screenW;
+                        h = (int) (screenW / targetAspect);
+                    }
+                } else if (targetAspect > screenAspect) {
                     w = screenW;
                     h = (int) (screenW / targetAspect);
                 } else {
                     h = screenH;
                     w = (int) (screenH * targetAspect);
                 }
+            }
+            // Pinch zoom: scale the fitted/cover size around the
+            // centre. The FrameLayout clips the overflow, so this
+            // crops rather than stretches. Zoom is kept when the
+            // video layout changes (e.g. rotation).
+            if (zoomScale > 1f) {
+                w = (int) (w * zoomScale);
+                h = (int) (h * zoomScale);
             }
             FrameLayout.LayoutParams lp =
                     (FrameLayout.LayoutParams) surfaceView.getLayoutParams();
@@ -739,6 +833,19 @@ public class PlayerActivity extends Activity {
             lp.gravity = android.view.Gravity.CENTER;
             surfaceView.setLayoutParams(lp);
         } catch (Throwable ignored) {
+        }
+    }
+
+    // True when the current size leaves no black bars: the surface
+    // covers the whole screen in both dimensions.
+    private boolean isCoveringScreen() {
+        try {
+            DisplayMetrics dm = getResources().getDisplayMetrics();
+            FrameLayout.LayoutParams lp =
+                    (FrameLayout.LayoutParams) surfaceView.getLayoutParams();
+            return lp.width >= dm.widthPixels && lp.height >= dm.heightPixels;
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -751,7 +858,7 @@ public class PlayerActivity extends Activity {
         }
         try {
             if (!useVlc && exoPlayer != null) {
-                exoPlayer.setVideoScalingMode(aspectIndex == 1
+                exoPlayer.setVideoScalingMode(aspectIndex == 1 || aspectIndex == 4
                         ? C.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
                         : C.VIDEO_SCALING_MODE_SCALE_TO_FIT);
             }
@@ -762,10 +869,19 @@ public class PlayerActivity extends Activity {
 
     private void cycleAspect() {
         aspectIndex = (aspectIndex + 1) % ASPECTS.length;
+        // A tapped aspect mode is exact: clear any manual pinch zoom.
+        zoomScale = 1f;
         applyAspect();
-        String[] names = {"متناسب", "پر کردن صفحه", "۱۶:۹", "۴:۳"};
+        String[] names = {"متناسب", "پر کردن صفحه", "۱۶:۹", "۴:۳", "فول‌اسکرین"};
         showGesture(names[aspectIndex]);
         resetHideTimer();
+    }
+
+    private float pinchDistance(MotionEvent event) {
+        if (event.getPointerCount() < 2) return 0f;
+        float dx = event.getX(0) - event.getX(1);
+        float dy = event.getY(0) - event.getY(1);
+        return (float) Math.sqrt(dx * dx + dy * dy);
     }
 
     private void showGesture(int iconRes, String text) {
@@ -889,10 +1005,41 @@ public class PlayerActivity extends Activity {
     // first, so a tap on a button does not become a gesture.
     private boolean onPlayerTouch(MotionEvent event) {
         switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_POINTER_DOWN: {
+                // Second finger: start a pinch zoom and cancel any
+                // single-finger volume/brightness/seek gesture, so a
+                // pinch never turns into a seek or volume change.
+                if (event.getPointerCount() >= 2) {
+                    float d = pinchDistance(event);
+                    if (d > 0) {
+                        pinching = true;
+                        gestureSuppressed = false;
+                        pinchStartDist = d;
+                        pinchBaseZoom = zoomScale;
+                        gestureMode = 0;
+                        gestureSeekTarget = -1;
+                    }
+                }
+                return true;
+            }
+            case MotionEvent.ACTION_POINTER_UP: {
+                if (pinching) {
+                    pinching = false;
+                    gestureMode = 0;
+                    gestureSeekTarget = -1;
+                    // The remaining finger has no fresh ACTION_DOWN
+                    // coming: swallow its moves until it lifts and
+                    // touches again, so pinch never becomes a seek.
+                    gestureSuppressed = true;
+                }
+                return true;
+            }
             case MotionEvent.ACTION_DOWN:
                 downX = event.getX();
                 downY = event.getY();
                 gestureMode = 0;
+                gestureSuppressed = false;
+                pinching = false;
                 gestureSeekTarget = -1;
                 gestureLeftSide = downX < getResources().getDisplayMetrics().widthPixels / 2f;
                 try {
@@ -910,6 +1057,34 @@ public class PlayerActivity extends Activity {
                 }
                 return true;
             case MotionEvent.ACTION_MOVE: {
+                if (pinching) {
+                    // Two-finger pinch: spread = zoom in, pinch in =
+                    // zoom out. 1.0x to 3.0x, centred and cropped.
+                    // When the zoomed picture covers the whole
+                    // screen there are no black bars left, so that
+                    // is reported as fullscreen.
+                    if (event.getPointerCount() >= 2 && pinchStartDist > 0) {
+                        float ratio = pinchDistance(event) / pinchStartDist;
+                        float z = pinchBaseZoom * ratio;
+                        if (z < 1f) z = 1f;
+                        if (z > 3f) z = 3f;
+                        zoomScale = z;
+                        applyVideoLayout();
+                        if (isCoveringScreen()) {
+                            showGesture(R.drawable.ic_fullscreen, "فول‌اسکرین");
+                        } else {
+                            showGesture(R.drawable.ic_fullscreen,
+                                    "زوم " + Math.round(zoomScale * 100) + "٪");
+                        }
+                    }
+                    return true;
+                }
+                if (gestureSuppressed) {
+                    // Finger left over from a finished pinch:
+                    // only size may change during a pinch, never
+                    // seek/volume/brightness after it.
+                    return true;
+                }
                 float dx = event.getX() - downX;
                 float dy = event.getY() - downY;
                 int screenW = getResources().getDisplayMetrics().widthPixels;
@@ -952,6 +1127,21 @@ public class PlayerActivity extends Activity {
             }
             case MotionEvent.ACTION_UP:
             case MotionEvent.ACTION_CANCEL: {
+                if (pinching) {
+                    // End of a pinch is not a tap: keep the zoom and
+                    // do not toggle controls or seek.
+                    pinching = false;
+                    gestureMode = 0;
+                    return true;
+                }
+                if (gestureSuppressed) {
+                    // Lift of the finger left over from a pinch:
+                    // not a tap, not a seek, just the end of it.
+                    gestureSuppressed = false;
+                    gestureMode = 0;
+                    gestureSeekTarget = -1;
+                    return true;
+                }
                 if (gestureMode == 3 && gestureSeekTarget >= 0) {
                     seekTo(gestureSeekTarget);
                 } else if (gestureMode == 0) {
@@ -987,6 +1177,7 @@ public class PlayerActivity extends Activity {
     }
 
     private void showError(String msg) {
+        hideLoading();
         errorView.setText(msg);
         errorBox.setVisibility(View.VISIBLE);
         setControlsVisible(true);
@@ -997,7 +1188,27 @@ public class PlayerActivity extends Activity {
     }
 
     private void hideSystemBars() {
+        // Edge-to-edge, including the display cutout: without
+        // SHORT_EDGES, Android keeps the video below / beside the
+        // punch-hole selfie camera and leaves a black strip there,
+        // even though the screen beside the camera is usable.
+        // SHORT_EDGES lets the video draw into the cutout area on
+        // the short edges (landscape left/right), so fullscreen
+        // really is the whole panel, camera hole included.
+        try {
+            if (Build.VERSION.SDK_INT >= 28) {
+                WindowManager.LayoutParams lp = getWindow().getAttributes();
+                lp.layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                getWindow().setAttributes(lp);
+            }
+        } catch (Throwable ignored) {
+        }
         if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                getWindow().setDecorFitsSystemWindows(false);
+            } catch (Throwable ignored) {
+            }
             WindowInsetsController c = getWindow().getInsetsController();
             if (c != null) {
                 c.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
@@ -1008,7 +1219,10 @@ public class PlayerActivity extends Activity {
             getWindow().getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                             | View.SYSTEM_UI_FLAG_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
         }
     }
 

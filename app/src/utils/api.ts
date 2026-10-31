@@ -497,7 +497,7 @@ export function isAndroid(): boolean {
 export function openInExternalApp(url: string, pkg?: string | null): void {
   if (!url) return;
   if (isAndroid()) {
-    // VLC fix: some video CDN hosts present a
+    // VLC fix: some video CDN hosts (e.g. some CDN hosts) present a
     // certificate VLC does not trust, so VLC stops with its "Insecure
     // site" dialog even though the same stream plays in the in-app
     // player. VLC does no TLS check at all over plain http, and these
