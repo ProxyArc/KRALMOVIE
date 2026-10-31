@@ -1,7 +1,11 @@
+// NOTE (public source): the real API endpoints were removed from
+// this public copy. Replace the placeholders below with your own
+// API base URLs before building, otherwise the app has no data
+// source and shows no movies.
 export const CONFIG = {
-  apiBase: 'https://mihan-cdn.com/api/',
-  apiBackup: 'https://appnxm.com/api/',
-  mediaBase: 'https://media.mihan-cdn.com/',
+  apiBase: 'https://YOUR_API_BASE/api/',
+  apiBackup: 'https://YOUR_API_BACKUP/api/',
+  mediaBase: 'https://YOUR_MEDIA_BASE/',
   timeout: 18000,
 };
 
@@ -493,7 +497,7 @@ export function isAndroid(): boolean {
 export function openInExternalApp(url: string, pkg?: string | null): void {
   if (!url) return;
   if (isAndroid()) {
-    // VLC fix: some video CDN hosts (e.g. s200.cdn123.ir) present a
+    // VLC fix: some video CDN hosts present a
     // certificate VLC does not trust, so VLC stops with its "Insecure
     // site" dialog even though the same stream plays in the in-app
     // player. VLC does no TLS check at all over plain http, and these
