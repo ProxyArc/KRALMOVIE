@@ -1,0 +1,165 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --font-sans: 'Vazirmatn', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-serif: 'Cinzel', Georgia, serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --bg: #0A0A0F;
+  --surface: rgba(24, 24, 34, 0.78);
+  --surface-2: rgba(36, 36, 48, 0.68);
+  --surface-solid: #161620;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --primary: #7B68EE;
+  --primary-bright: #9D8BFF;
+  --accent: #A78BFA;
+  --success: #32D74B;
+  --warning: #FF9F0A;
+  --danger: #FF453A;
+  --text: #FFFFFF;
+  --text-2: #EBEBF5;
+  --secondary: rgba(235, 235, 245, 0.65);
+  --tertiary: rgba(235, 235, 245, 0.38);
+  --header-bg: rgba(10, 10, 15, 0.82);
+}
+
+[data-theme="light"] {
+  --bg: #F4F4F9;
+  --surface: rgba(255, 255, 255, 0.88);
+  --surface-2: rgba(241, 241, 248, 0.85);
+  --surface-solid: #FFFFFF;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --primary: #5B4FE9;
+  --primary-bright: #4F46E5;
+  --accent: #7C3AED;
+  --text: #14141B;
+  --text-2: #2C2C38;
+  --secondary: rgba(44, 44, 56, 0.68);
+  --tertiary: rgba(44, 44, 56, 0.44);
+  --header-bg: rgba(244, 244, 249, 0.88);
+}
+
+[data-theme="amoled"] {
+  --bg: #000000;
+  --surface: rgba(14, 14, 18, 0.88);
+  --surface-2: rgba(24, 24, 30, 0.78);
+  --surface-solid: #0C0C10;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --primary: #8B5CF6;
+  --primary-bright: #A78BFA;
+  --accent: #C084FC;
+  --text: #FFFFFF;
+  --text-2: #F4F4F6;
+  --secondary: rgba(244, 244, 246, 0.65);
+  --tertiary: rgba(244, 244, 246, 0.38);
+  --header-bg: rgba(0, 0, 0, 0.88);
+}
+
+[data-theme="gold"] {
+  --bg: #0C0B0E;
+  --surface: rgba(28, 25, 22, 0.82);
+  --surface-2: rgba(42, 37, 31, 0.72);
+  --surface-solid: #1A1714;
+  --border: rgba(245, 197, 66, 0.12);
+  --border-strong: rgba(245, 197, 66, 0.24);
+  --primary: #E5A93C;
+  --primary-bright: #F5C542;
+  --accent: #D97706;
+  --text: #FFFDF9;
+  --text-2: #F3EFE6;
+  --secondary: rgba(243, 239, 230, 0.66);
+  --tertiary: rgba(243, 239, 230, 0.4);
+  --header-bg: rgba(12, 11, 14, 0.85);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  font-family: var(--font-sans);
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg);
+  color: var(--text);
+  overflow-x: hidden;
+  min-height: 100vh;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.55;
+  background-image:
+    radial-gradient(ellipse 80% 50% at 20% 0%, rgba(123, 104, 238, 0.10) 0%, transparent 55%),
+    radial-gradient(ellipse 60% 40% at 80% 100%, rgba(168, 139, 250, 0.07) 0%, transparent 55%);
+  background-attachment: fixed;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(123, 104, 238, 0.32); border-radius: 10px; }
+
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+@keyframes orbitSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes orbitSpinReverse {
+  0% { transform: rotate(360deg); }
+  100% { transform: rotate(0deg); }
+}
+
+@keyframes floatPulse {
+  0%, 100% { transform: translateY(0px) scale(1); }
+  50% { transform: translateY(-6px) scale(1.04); }
+}
+
+@keyframes shimmerBar {
+  0% { transform: translateX(120%); }
+  100% { transform: translateX(-180%); }
+}
+
+@keyframes eqBounce {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
+@keyframes skeletonWave {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.09) 50%, rgba(255,255,255,0.03) 75%);
+  background-size: 200% 100%;
+  animation: skeletonWave 1.4s ease-in-out infinite;
+}
+[data-theme="light"] .skeleton-shimmer {
+  background: linear-gradient(90deg, rgba(0,0,0,0.04) 25%, rgba(0,0,0,0.09) 50%, rgba(0,0,0,0.04) 75%);
+  background-size: 200% 100%;
+}
+
+.orbit-ring-1 { animation: orbitSpin 8s linear infinite; }
+.orbit-ring-2 { animation: orbitSpinReverse 12s linear infinite; }
+.float-logo { animation: floatPulse 2.6s ease-in-out infinite; }
+.eq-bar-1 { animation: eqBounce 0.8s ease-in-out infinite; }
+.eq-bar-2 { animation: eqBounce 0.8s ease-in-out 0.15s infinite; }
+.eq-bar-3 { animation: eqBounce 0.8s ease-in-out 0.3s infinite; }
+.eq-bar-4 { animation: eqBounce 0.8s ease-in-out 0.45s infinite; }
+.eq-bar-5 { animation: eqBounce 0.8s ease-in-out 0.2s infinite; }
+
+/* Landscape fullscreen player support */
+body.landscape-mode {
+  overflow: hidden !important;
+}

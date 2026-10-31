@@ -1,0 +1,6 @@
+{
+  "name": "KRALMOVIE | پادشاه فیلم و سریال",
+  "description": "اپلیکیشن تماشای آنلاین و دانلود فیلم و سریال کرال مووی (KRALMOVIE)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
