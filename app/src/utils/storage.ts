@@ -164,3 +164,95 @@ export function toggleLocalLike(item: any): { liked: boolean; list: any[] } {
   }
   return { liked: !exists, list: updated };
 }
+
+/* ── Download Manager: saved-for-download (v1.18) ── */
+export interface SavedDownloadItem {
+  id: string;
+  title: string;
+  poster: string;
+  type: 'movie' | 'series';
+  year: string;
+  savedAt: number;
+  movie?: any;
+}
+const SAVED_DL_KEY = 'kral-saved-downloads-v1';
+export function getSavedDownloads(): SavedDownloadItem[] {
+  try {
+    const raw = localStorage.getItem(SAVED_DL_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+export function isSavedForDownload(id: string | number): boolean {
+  return getSavedDownloads().some((x) => String(x.id) === String(id));
+}
+export function toggleSavedDownload(item: any): { saved: boolean; list: SavedDownloadItem[] } {
+  const list = getSavedDownloads();
+  const id = String(item?.id || '');
+  if (!id) return { saved: false, list };
+  const exists = list.some((x) => String(x.id) === id);
+  let updated: SavedDownloadItem[];
+  if (exists) {
+    updated = list.filter((x) => String(x.id) !== id);
+  } else {
+    updated = [
+      {
+        id,
+        title: String(item.title || item.name || 'بدون عنوان'),
+        poster: String(item.poster || item.poster_url || item.image || ''),
+        type: item.type === 'series' ? 'series' : 'movie',
+        year: String(item.year || ''),
+        savedAt: Date.now(),
+        movie: item,
+      },
+      ...list,
+    ];
+  }
+  try {
+    localStorage.setItem(SAVED_DL_KEY, JSON.stringify(updated));
+  } catch {
+    // ignore
+  }
+  return { saved: !exists, list: updated };
+}
+
+/* Download records created when a download is enqueued (v1.18).
+ * The Android DownloadManager owns the file; this record only keeps
+ * the title/type/label so the manager can show it after a restart. */
+export interface DownloadRecord {
+  dmId: number;
+  url: string;
+  title: string;
+  label: string;
+  quality: string;
+  type: 'movie' | 'series';
+  fileName: string;
+  folder: string;
+  createdAt: number;
+}
+const DL_RECORDS_KEY = 'kral-download-records-v1';
+export function getDownloadRecords(): DownloadRecord[] {
+  try {
+    const raw = localStorage.getItem(DL_RECORDS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+export function addDownloadRecord(rec: DownloadRecord): void {
+  try {
+    const list = getDownloadRecords().filter((x) => x.dmId !== rec.dmId);
+    localStorage.setItem(DL_RECORDS_KEY, JSON.stringify([rec, ...list]));
+  } catch {
+    // ignore
+  }
+}
+export function removeDownloadRecord(dmId: number): void {
+  try {
+    const list = getDownloadRecords().filter((x) => x.dmId !== dmId);
+    localStorage.setItem(DL_RECORDS_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
+}

@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import {
   ArrowRight,
+  Bookmark,
   Check,
   ChevronDown,
   Copy,
+  Download,
   Heart,
   Layers,
   Play,
@@ -55,6 +57,12 @@ interface DetailsViewProps {
   isLiked: boolean;
   onToggleLike: () => void;
   showToast: (msg: string, type?: 'success' | 'error') => void;
+  // v1.18 downloads
+  isSaved?: boolean;
+  onToggleSave?: () => void;
+  onDownloadMovieQuality?: (source: VideoSource) => void;
+  onDownloadEpisode?: (url: string, quality: string, sIdx: number, eIdx: number) => void;
+  onDownloadSeason720?: (season: any, sIdx: number, episodes: any[]) => void;
 }
 
 export const DetailsView: React.FC<DetailsViewProps> = ({
@@ -68,6 +76,11 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
   isLiked,
   onToggleLike,
   showToast,
+  isSaved,
+  onToggleSave,
+  onDownloadMovieQuality,
+  onDownloadEpisode,
+  onDownloadSeason720,
 }) => {
   const id = movieId(movie);
   const title = brandFix(movieTitle(movie)) || 'بدون عنوان';
@@ -210,6 +223,19 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
         >
           <ArrowRight className="w-4 h-4" />
           <span>بازگشت</span>
+        </button>
+
+        <button
+          onClick={onToggleSave}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-sm font-bold transition-transform active:scale-95 cursor-pointer"
+          style={{
+            background: isSaved ? 'rgba(123, 104, 238, 0.20)' : 'var(--surface-2)',
+            border: isSaved ? '1px solid rgba(123, 104, 238, 0.55)' : '1px solid var(--border)',
+            color: isSaved ? 'var(--primary-bright)' : 'var(--text)',
+          }}
+        >
+          <Bookmark className={`w-4 h-4 ${isSaved ? 'fill-current' : ''}`} />
+          <span>{isSaved ? 'ذخیره‌شده برای دانلود' : 'ذخیره برای دانلود'}</span>
         </button>
 
         <button
@@ -418,8 +444,8 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
                   const isWatched =
                     !!movieWatchedInfo && movieWatchedInfo.quality === s.quality;
                   return (
+                    <span key={sIdx} className="inline-flex items-center gap-1.5">
                     <button
-                      key={sIdx}
                       onClick={() => onSelectMovieQuality(sIdx, s, movieSources)}
                       className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-extrabold transition-transform active:scale-95 cursor-pointer"
                       style={{
@@ -445,6 +471,19 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
                         </span>
                       )}
                     </button>
+                    <button
+                      onClick={() => onDownloadMovieQuality && onDownloadMovieQuality(s)}
+                      title="دانلود این کیفیت"
+                      className="inline-flex items-center justify-center w-9 h-9 rounded-xl transition-transform active:scale-95 cursor-pointer"
+                      style={{
+                        background: 'rgba(123, 104, 238, 0.16)',
+                        border: '1px solid rgba(123, 104, 238, 0.35)',
+                        color: 'var(--primary-bright)',
+                      }}
+                    >
+                      <Download className="w-4 h-4" />
+                    </button>
+                    </span>
                   );
                 })}
               </div>
@@ -615,6 +654,22 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
                               <Copy className="w-3.5 h-3.5" style={{ color: 'var(--primary-bright)' }} />
                               <span>کپی همه لینک‌های {seasonTitle} به تفکیک کیفیت:</span>
                             </span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (onDownloadSeason720) {
+                                  onDownloadSeason720(season, sIdx, parsedEpisodes.map((x: any) => x.ep));
+                                }
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-extrabold transition-transform active:scale-95 cursor-pointer"
+                              style={{
+                                background: 'linear-gradient(135deg, var(--primary), var(--accent))',
+                                color: '#fff',
+                              }}
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              <span>دانلود کل فصل با کیفیت 720</span>
+                            </button>
                             {allSeasonUrls.length > 1 && (
                               <button
                                 onClick={(e) => {
@@ -812,8 +867,8 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
                                     }
 
                                     return (
+                                      <span key={qIdx} className="inline-flex items-center gap-1">
                                       <button
-                                        key={qIdx}
                                         onClick={() =>
                                           onSelectEpisodeSource(
                                             l.url,
@@ -853,6 +908,19 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
                                           </span>
                                         )}
                                       </button>
+                                      <button
+                                        onClick={() => onDownloadEpisode && onDownloadEpisode(l.url, l.quality, sIdx, eIdx)}
+                                        title="دانلود این قسمت با این کیفیت"
+                                        className="inline-flex items-center justify-center w-8 h-8 rounded-xl transition-transform active:scale-95 cursor-pointer"
+                                        style={{
+                                          background: 'rgba(123, 104, 238, 0.16)',
+                                          border: '1px solid rgba(123, 104, 238, 0.35)',
+                                          color: 'var(--primary-bright)',
+                                        }}
+                                      >
+                                        <Download className="w-3.5 h-3.5" />
+                                      </button>
+                                      </span>
                                     );
                                   })}
                                 </div>

@@ -138,16 +138,16 @@ public class PlayerActivity extends Activity {
     // would also jump the film forward/backward. While this is
     // set, all moves are swallowed until a fresh ACTION_DOWN.
     private boolean gestureSuppressed = false;
-    private static final MediaPlayer.ScaleType[] ASPECTS = {
-            MediaPlayer.ScaleType.SURFACE_BEST_FIT,
-            MediaPlayer.ScaleType.SURFACE_FILL,
-            MediaPlayer.ScaleType.SURFACE_16_9,
-            MediaPlayer.ScaleType.SURFACE_4_3,
-            // Fullscreen (index 4): libVLC scale stays BestFit, but
-            // applyVideoLayout() sizes the surface to *cover* the
-            // screen, so there are no black bars at all.
-            MediaPlayer.ScaleType.SURFACE_BEST_FIT,
-    };
+    // v1.35: scale resolved lazily, only when VLC is playing.
+    private MediaPlayer.ScaleType vlcScaleFor(int index) {
+        switch (index) {
+            case 1: return MediaPlayer.ScaleType.SURFACE_FILL;
+            case 2: return MediaPlayer.ScaleType.SURFACE_16_9;
+            case 3: return MediaPlayer.ScaleType.SURFACE_4_3;
+            case 4: return MediaPlayer.ScaleType.SURFACE_BEST_FIT;
+            default: return MediaPlayer.ScaleType.SURFACE_BEST_FIT;
+        }
+    }
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable progressRunnable = new Runnable() {
@@ -174,6 +174,11 @@ public class PlayerActivity extends Activity {
     // libVLC
     private LibVLC vlcLib;
     private MediaPlayer vlcPlayer;
+    // v1.37: for a downloaded film (content:// from MediaStore),
+    // VLC must be given a file descriptor, not the content Uri
+    // string — libVLC cannot open content:// as a network location.
+    // Kept open until releaseVlc() and closed there.
+    private android.content.res.AssetFileDescriptor contentFd;
     private boolean useVlc = false;
     private boolean triedHttpVlc = false;
 
@@ -327,7 +332,20 @@ public class PlayerActivity extends Activity {
                             runOnUiThread(() -> onNewVideoLayout(
                                     visibleWidth, visibleHeight, sarNum, sarDen)));
             vlcPlayer.setEventListener(event -> runOnUiThread(() -> onVlcEvent(event)));
-            Media media = new Media(vlcLib, Uri.parse(url));
+            Media media = null;
+            if (url != null && url.startsWith("content://")) {
+                try {
+                    contentFd = getContentResolver().openAssetFileDescriptor(Uri.parse(url), "r");
+                    if (contentFd != null) {
+                        media = new Media(vlcLib, contentFd.getFileDescriptor());
+                    }
+                } catch (Throwable ignored) {
+                    media = null;
+                }
+            }
+            if (media == null) {
+                media = new Media(vlcLib, Uri.parse(url));
+            }
             vlcPlayer.setMedia(media);
             media.release();
             vlcPlayer.play();
@@ -414,6 +432,11 @@ public class PlayerActivity extends Activity {
 
     private void releaseVlc() {
         try {
+            if (contentFd != null) contentFd.close();
+        } catch (Throwable ignored) {
+        }
+        contentFd = null;
+        try {
             if (vlcPlayer != null) {
                 vlcPlayer.stop();
                 vlcPlayer.getVLCVout().detachViews();
@@ -448,16 +471,28 @@ public class PlayerActivity extends Activity {
                 trackSelector.setParameters(params);
             } catch (Throwable ignored) {
             }
-            DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
-                    .setAllowCrossProtocolRedirects(true)
-                    .setConnectTimeoutMs(15000)
-                    .setReadTimeoutMs(15000);
-            if (userAgent != null && !userAgent.isEmpty()) {
-                httpFactory.setUserAgent(userAgent);
+            // v1.37: a downloaded film is content://, and the HTTP
+            // data source cannot open it (MalformedURLException:
+            // unknown protocol: content, code 2001). Use the default
+            // data source for content://, which reads via the
+            // ContentResolver; keep the HTTP factory (with the
+            // browser UA) for http/https streams.
+            androidx.media3.datasource.DataSource.Factory dataFactory;
+            if (url != null && url.startsWith("content://")) {
+                dataFactory = new androidx.media3.datasource.DefaultDataSource.Factory(this);
+            } else {
+                DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
+                        .setAllowCrossProtocolRedirects(true)
+                        .setConnectTimeoutMs(15000)
+                        .setReadTimeoutMs(15000);
+                if (userAgent != null && !userAgent.isEmpty()) {
+                    httpFactory.setUserAgent(userAgent);
+                }
+                dataFactory = httpFactory;
             }
             exoPlayer = new ExoPlayer.Builder(this)
                     .setTrackSelector(trackSelector)
-                    .setMediaSourceFactory(new DefaultMediaSourceFactory(httpFactory))
+                    .setMediaSourceFactory(new DefaultMediaSourceFactory(dataFactory))
                     .build();
             exoPlayer.setVideoSurfaceView(surfaceView);
             exoPlayer.addListener(new Player.Listener() {
@@ -852,7 +887,7 @@ public class PlayerActivity extends Activity {
     private void applyAspect() {
         try {
             if (useVlc && vlcPlayer != null) {
-                vlcPlayer.setVideoScale(ASPECTS[aspectIndex]);
+                vlcPlayer.setVideoScale(vlcScaleFor(aspectIndex));
             }
         } catch (Throwable ignored) {
         }
@@ -868,7 +903,7 @@ public class PlayerActivity extends Activity {
     }
 
     private void cycleAspect() {
-        aspectIndex = (aspectIndex + 1) % ASPECTS.length;
+        aspectIndex = (aspectIndex + 1) % 5;
         // A tapped aspect mode is exact: clear any manual pinch zoom.
         zoomScale = 1f;
         applyAspect();

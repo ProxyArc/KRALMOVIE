@@ -90,9 +90,6 @@ export const SplashLoader: React.FC<SplashProps> = ({
       >
         KRALMOVIE
       </h1>
-      <p className="text-xs font-bold tracking-wide mb-6" style={{ color: 'var(--secondary)' }}>
-        پادشاه فیلم و سریال
-      </p>
 
       {!error ? (
         <div className="flex flex-col items-center gap-4 w-full max-w-xs">

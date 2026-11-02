@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowRight,
+  Bookmark,
   ChevronLeft,
   Copy,
+  Download,
   Film,
+  LayoutGrid,
   Palette,
   Play,
   PlusCircle,
@@ -28,9 +31,19 @@ import {
   fetchMovieLinks,
   fetchSectionAll,
   fetchStarMovies,
+  pickDownloadUrl,
+  fetchMoreStars,
+  extractStarsFromItems,
+  mergeStars,
+  filterWebCards,
+  isStarObject,
+  filterMoviesOnly,
   getGuestToken,
+  searchByCountryMore,
+  searchByGenreMore,
   movieId,
   movieTitle,
+  normalizeQualityGroup,
   normalizeVideoUrl,
   openInExternalApp,
   resolveImageUrl,
@@ -43,9 +56,13 @@ import {
 } from './utils/api';
 import {
   addToLocalHistory,
+  addDownloadRecord,
   getLocalHistory,
   getLocalLikes,
+  getSavedDownloads,
   getStoredTheme,
+  isSavedForDownload,
+  toggleSavedDownload,
   getWatchedData,
   isItemLiked,
   markEpisodeQualityWatched,
@@ -60,12 +77,14 @@ import { SplashLoader, VpnWarningCard } from './components/SplashAndVpnAlert';
 import { MovieCard, SkeletonGrid } from './components/MovieCard';
 import { DetailsView } from './components/DetailsView';
 import { PlayerView } from './components/PlayerView';
+import { DownloadManager } from './components/DownloadManager';
 
 type NavRoute =
   | { type: 'home' }
+  | { type: 'downloads' }
   | {
       type: 'list';
-      kind: 'section' | 'genre' | 'country' | 'star' | 'search' | 'all-stars';
+      kind: 'section' | 'genre' | 'country' | 'star' | 'search' | 'all-stars' | 'categories' | 'countries';
       id?: string | number;
       sectionIdx?: number;
       title: string;
@@ -119,8 +138,51 @@ export default function App() {
   const [searchFocused, setSearchFocused] = useState(false);
   const searchTimerRef = useRef<any>(null);
 
-  // Artist / Star Search (on Home & in Stars Directory)
-  const [starSearchQuery, setStarSearchQuery] = useState('');
+  // v1.28: actor search is REMOVED completely, per user request.
+  // The artists section is back to the 1.17 layout: a horizontal
+  // row on home and a plain grid on the all-stars page, with no
+  // search box, no search button, anywhere.
+  const [starPage, setStarPage] = useState(1);
+  const [starLoadingMore, setStarLoadingMore] = useState(false);
+  const [starHasMore, setStarHasMore] = useState(true);
+  const starSentinelRef = useRef<HTMLDivElement | null>(null);
+  const handleLoadMoreStars = useCallback(async () => {
+    if (starLoadingMore || !starHasMore) return;
+    setStarLoadingMore(true);
+    try {
+      const nextPage = starPage + 1;
+      const more = await fetchMoreStars(nextPage);
+      if (!more.length) {
+        setStarHasMore(false);
+        return;
+      }
+      // Merge synchronously against the current list, so we can
+      // tell whether the server page was all duplicates of the
+      // first 30 (then stop) or genuinely new stars (then keep
+      // offering more). A setStars updater runs later, so it
+      // cannot be used to measure this here.
+      const merged = mergeStars(stars, more);
+      const added = merged.length - stars.length;
+      setStars(merged);
+      setStarPage(nextPage);
+      if (added === 0) setStarHasMore(false);
+    } finally {
+      setStarLoadingMore(false);
+    }
+  }, [starLoadingMore, starHasMore, starPage, stars]);
+  useEffect(() => {
+    if (currentRoute.type !== 'list' || currentRoute.kind !== 'all-stars') return;
+    const el = starSentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) handleLoadMoreStars();
+      },
+      { rootMargin: '400px' }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [currentRoute, handleLoadMoreStars]);
 
   // Sub-page / List View State
   const [listItems, setListItems] = useState<any[]>([]);
@@ -141,7 +203,10 @@ export default function App() {
   const [playerAutoQuality, setPlayerAutoQuality] = useState<string | null>(null);
   const [subtitleUrls, setSubtitleUrls] = useState<string[]>([]);
 
-  // External Player Selection Modal
+  // Player Selection Modal (restored in v1.19, per user: do NOT
+  // delete this page). Tapping a quality opens this modal; it now
+  // also has a Download button. "پخش در همین برنامه" plays in the
+  // in-app player, which in v1.19 is libVLC only (no ExoPlayer).
   const [externalModalData, setExternalModalData] = useState<{
     url: string;
     movieId: string;
@@ -149,6 +214,8 @@ export default function App() {
     sIdx?: number;
     eIdx?: number;
   } | null>(null);
+  const [savedVersion, setSavedVersion] = useState(0);
+  const [downloadRefresh, setDownloadRefresh] = useState(0);
 
   // Persistent Watched & Likes State
   const [watchedData, setWatchedData] = useState<WatchedMap>(() => getWatchedData());
@@ -294,6 +361,7 @@ export default function App() {
 
       allItemsRef.current.clear();
       loadedSections.forEach((s: any) => {
+        s.items = filterWebCards(s.items || []);
         (s.items || []).forEach((i: any) => {
           if (i && i.id) allItemsRef.current.set(String(i.id), i);
         });
@@ -302,7 +370,13 @@ export default function App() {
       setSections(loadedSections);
       setCountries(loadedCountries);
       setGenres(loadedGenres);
-      setStars(loadedStars);
+      // v1.26: the home response only carries 30 directory stars.
+      // Home movies themselves carry cast lists from the same
+      // response, so merge those actors in too — the directory
+      // then already holds more than 30 before any load-more.
+      const homeItems: any[] = [];
+      loadedSections.forEach((s: any) => (s.items || []).forEach((i: any) => homeItems.push(i)));
+      setStars(mergeStars(loadedStars, extractStarsFromItems(homeItems)));
       setIsRetryingInit(false);
 
       setTimeout(() => {
@@ -390,6 +464,7 @@ export default function App() {
   useEffect(() => {
     if (currentRoute.type !== 'list') return;
     if (currentRoute.kind === 'all-stars') return;
+    if (currentRoute.kind === 'categories' || currentRoute.kind === 'countries') return;
 
     let cancelled = false;
     async function loadListRoute() {
@@ -403,6 +478,30 @@ export default function App() {
           items = await searchByGenre(currentRoute.id);
         } else if (currentRoute.kind === 'star') {
           items = await fetchStarMovies(currentRoute.id || '', currentRoute.title);
+          if (!items.length) {
+            // v1.26 local cast fallback: films already on the phone
+            // (home sections + cache) whose cast really contains
+            // this actor, by id or by name. This is not a title
+            // search — a film only counts if this actor is in its
+            // cast list, so Jason Statham shows his own films.
+            const idStr = String(currentRoute.id || '');
+            const nameNorm = String(currentRoute.title || '').trim().toLowerCase();
+            const pool: any[] = [...allItemsRef.current.values()];
+            sections.forEach((s: any) => (s.items || []).forEach((i: any) => pool.push(i)));
+            items = dedupeMovies(
+              pool.filter((m: any) => {
+                if (!m || typeof m !== 'object') return false;
+                const cast = [...(m.stars || []), ...(m.actors || []), ...(m.casts || []), ...(m.cast || [])];
+                return cast.some((c: any) => {
+                  if (typeof c === 'string') return nameNorm && c.trim().toLowerCase() === nameNorm;
+                  if (!c || typeof c !== 'object') return false;
+                  const cid = String(c.id ?? c.star_id ?? c.actor_id ?? c.person_id ?? '');
+                  const cname = String(c.name ?? c.title ?? '').trim().toLowerCase();
+                  return (idStr !== '' && cid !== '' && cid === idStr) || (nameNorm !== '' && cname !== '' && cname === nameNorm);
+                });
+              })
+            );
+          }
         } else if (currentRoute.kind === 'section' && currentRoute.sectionIdx != null) {
           const sec = sections[currentRoute.sectionIdx];
           if (sec) {
@@ -423,6 +522,7 @@ export default function App() {
         }
 
         if (cancelled) return;
+        items = filterMoviesOnly(filterWebCards(items));
         items.forEach((m) => {
           if (m?.id) allItemsRef.current.set(String(m.id), m);
         });
@@ -438,14 +538,27 @@ export default function App() {
     };
   }, [currentRoute, sections, genres, countries]);
 
-  // Load More in "See All" (نمایش همه) List Route
+  // Load More in "See All" (نمایش همه) List Route — v1.18: genre
+  // and country pages load their own next window, not the generic
+  // catalog, so "more" actually continues that genre/country.
   async function handleLoadMoreList() {
     if (loadingMore) return;
+    if (currentRoute.type !== 'list') return;
     setLoadingMore(true);
     const nextStep = catalogStep + 1;
     setCatalogStep(nextStep);
     try {
-      const extra = await fetchMoreCatalog(null, nextStep);
+      let extra: any[] = [];
+      if (currentRoute.kind === 'genre' && currentRoute.id != null) {
+        extra = await searchByGenreMore(currentRoute.id, nextStep);
+      } else if (currentRoute.kind === 'country' && currentRoute.id != null) {
+        extra = await searchByCountryMore(currentRoute.id, nextStep);
+      } else if (currentRoute.kind === 'section') {
+        extra = await fetchMoreCatalog(null, nextStep);
+      } else {
+        extra = await fetchMoreCatalog(null, nextStep);
+      }
+      extra = filterWebCards(extra);
       extra.forEach((m) => {
         if (m?.id) allItemsRef.current.set(String(m.id), m);
       });
@@ -457,6 +570,20 @@ export default function App() {
 
   // Handle Opening Movie/Series Details
   async function handleOpenDetails(id: string, initialMovie?: any) {
+    // v1.29 guard: if the tapped card is actually a star object
+    // (an actor that leaked into a list), do NOT open it as a
+    // movie — that was the "unrelated film" bug. Go to that
+    // actor's own films page instead.
+    if (initialMovie && isStarObject(initialMovie)) {
+      const sName = brandFix(initialMovie.name || initialMovie.title || 'هنرمند');
+      pushRoute({
+        type: 'list',
+        kind: 'star',
+        id: initialMovie.id ?? initialMovie.star_id ?? initialMovie.actor_id ?? initialMovie.person_id ?? '',
+        title: sName,
+      });
+      return;
+    }
     const cached = initialMovie || allItemsRef.current.get(String(id)) || { id };
     setCurrentMovie(cached);
     setCurrentSources([]);
@@ -544,7 +671,24 @@ export default function App() {
     pushRoute({ type: 'player' });
   }
 
-  // Episode Source Selected -> Open External Player Choice Modal & Mark Watched
+  // Play in the in-app VLC player (v1.19: libVLC only).
+  // In a plain browser there is no bridge, so fall back to the
+  // PlayerView route.
+  function playDirectVlc(url: string) {
+    try {
+      const bridge = (window as any).AndroidPlayer;
+      if (bridge?.playNative) {
+        const title = currentMovie ? movieTitle(currentMovie) : '';
+        bridge.playNative(normalizeVideoUrl(url), title);
+        return true;
+      }
+    } catch {
+      // fall through
+    }
+    return false;
+  }
+
+  // Episode Source Selected -> Player Choice Modal & Mark Watched
   function handleSelectEpisodeSource(
     url: string,
     quality: string,
@@ -576,7 +720,7 @@ export default function App() {
   }
 
   // Movie Quality Selected directly in DetailsView (no PlayerView
-  // route) -> Open External Player Choice Modal & Mark Watched.
+  // route) -> Player Choice Modal & Mark Watched.
   // Same modal as the PlayerView flow, so tapping a quality here
   // goes straight to choosing the player and playing.
   function handleSelectMovieQualityDirect(
@@ -600,7 +744,7 @@ export default function App() {
     });
   }
 
-  // Movie Quality Option Selected in PlayerView -> Open External Player Choice Modal & Mark Watched
+  // Movie Quality Option Selected in PlayerView -> Player Choice Modal & Mark Watched
   function handleSelectMovieQualityOption(idx: number, source: VideoSource) {
     if (!currentMovie) return;
     const id = movieId(currentMovie);
@@ -641,10 +785,11 @@ export default function App() {
     }, 900);
   }
 
-  // Launch chosen player from External Modal
-  async function handleLaunchPlayerChoice(choice: 'app' | 'mx' | 'vlc' | 'copy') {
+  // Launch chosen player from Player Choice Modal (v1.19, with a
+  // new Download button in the same modal).
+  async function handleLaunchPlayerChoice(choice: 'app' | 'mx' | 'vlc' | 'copy' | 'download') {
     if (!externalModalData) return;
-    const { url, quality } = externalModalData;
+    const { url, quality, sIdx, eIdx } = externalModalData;
 
     if (choice === 'copy') {
       const ok = await copyText(url);
@@ -653,22 +798,38 @@ export default function App() {
       return;
     }
 
+    if (choice === 'download') {
+      // Download this exact quality from the modal, for a movie or
+      // for one episode (sIdx/eIdx present = series episode).
+      if (!currentMovie) return;
+      const title = brandFix(movieTitle(currentMovie));
+      const q = normalizeQualityGroup(quality);
+      const isSeries = sIdx != null && eIdx != null;
+      const label = isSeries
+        ? `${title} — فصل ${sIdx! + 1} قسمت ${eIdx! + 1}`
+        : title;
+      const fileName = isSeries
+        ? `${title} - S${String(sIdx! + 1).padStart(2, '0')}E${String(eIdx! + 1).padStart(2, '0')} - ${q}.${'mp4'}`
+        : `${title} - ${q}.${'mp4'}`;
+      // Use the same enqueue helper below (defined further down in
+      // this component, hoisted as a function declaration? No: it is
+      // a const-style function, so call it via the modal download
+      // path defined at the bottom of this handler instead.)
+      setExternalModalData(null);
+      // Defer to the shared downloader: it is defined below, so
+      // queue the download on the next tick after the modal closes.
+      setTimeout(() => {
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
+        downloadFromModal(url, title, isSeries, label, q, fileName);
+      }, 0);
+      return;
+    }
+
     if (choice === 'app') {
       setExternalModalData(null);
-      // Strong native player (ExoPlayer) in the APK: it demuxes
-      // MKV itself and renders embedded subtitles, unlike the
-      // WebView <video> element. Fall back to the WebView player
-      // in a plain browser where there is no Android bridge.
-      try {
-        const bridge = (window as any).AndroidPlayer;
-        if (bridge?.playNative) {
-          const title = currentMovie ? movieTitle(currentMovie) : '';
-          bridge.playNative(url, title);
-          return;
-        }
-      } catch {
-        // fall through to the WebView player
-      }
+      // In-app player: libVLC only in v1.19. Fall back to the
+      // WebView player in a plain browser where there is no bridge.
+      if (playDirectVlc(url)) return;
       setPlayerAutoUrl(url);
       setPlayerAutoQuality(quality);
       if (currentRoute.type !== 'player') {
@@ -688,6 +849,205 @@ export default function App() {
       setExternalModalData(null);
       return;
     }
+  }
+
+  // ── Downloads (v1.18) ──
+  function sanitizeDownloadName(name: string): string {
+    return String(name || 'kralmovie-video')
+      .replace(/[\\/:*?"<>|]/g, '_')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 100) || 'kralmovie-video';
+  }
+  function downloadExt(url: string): string {
+    const clean = String(url || '').split('?')[0].split('#')[0];
+    const m = clean.match(/\.(mp4|mkv|webm|mov|m4v|avi|ts)$/i);
+    return m ? m[1].toLowerCase() : 'mp4';
+  }
+  function enqueueDownload(
+    opts: {
+      url: string;
+      title: string;
+      type: 'movie' | 'series';
+      label: string;
+      quality: string;
+      fileName: string;
+    },
+    quiet = false
+  ): boolean {
+    // v1.26: DownloadManager cannot download an HLS/DASH stream
+    // (.m3u8/.mpd) as a playable video — it would only fetch the
+    // playlist, or stall at 0%. Say so plainly instead of creating
+    // another stuck 0% entry, and let the user pick an MP4/MKV
+    // quality for downloading.
+    const cleanUrl = String(opts.url || '').split('?')[0].split('#')[0].toLowerCase();
+    if (/\.(m3u8|mpd)$/.test(cleanUrl)) {
+      if (!quiet) showToast('این کیفیت به صورت استریم است و مستقیم دانلود نمی‌شود؛ یک کیفیت MP4 یا MKV را برای دانلود انتخاب کنید', 'error');
+      return false;
+    }
+    // v1.26: do not enqueue the same file twice. The screenshot
+    // showed the same title twice, both stuck at 0%.
+    try {
+      const bridge0 = (window as any).AndroidPlayer;
+      if (bridge0?.listDownloads) {
+        const raw0 = bridge0.listDownloads();
+        const list0 = typeof raw0 === 'string' ? JSON.parse(raw0) : raw0;
+        if (Array.isArray(list0) && list0.some((d: any) => d && d.fileName === opts.fileName && ['downloading', 'paused', 'pending'].includes(String(d.status || '')))) {
+          if (!quiet) showToast('این فایل در حال دانلود است', 'success');
+          return false;
+        }
+      }
+    } catch {
+      // ignore: continue with a fresh enqueue
+    }
+    try {
+      const bridge = (window as any).AndroidPlayer;
+      if (bridge?.startDownload) {
+        const folder = opts.type === 'series' ? 'KRALMOVIE/Series' : 'KRALMOVIE/Movies';
+        const dmId = bridge.startDownload(
+          JSON.stringify({
+            url: normalizeVideoUrl(opts.url),
+            title: opts.title,
+            type: opts.type,
+            label: opts.label,
+            quality: opts.quality,
+            fileName: opts.fileName,
+          })
+        );
+        if (dmId != null && Number(dmId) >= 0) {
+          addDownloadRecord({
+            dmId: Number(dmId),
+            url: opts.url,
+            title: opts.title,
+            label: opts.label,
+            quality: opts.quality,
+            type: opts.type,
+            fileName: opts.fileName,
+            folder,
+            createdAt: Date.now(),
+          });
+          setDownloadRefresh((v) => v + 1);
+          if (!quiet) showToast('دانلود شروع شد — در دانلود منیجر دنبالش کنید', 'success');
+          return true;
+        }
+      }
+    } catch {
+      // fall through
+    }
+    // Browser fallback: let the browser download the file.
+    try {
+      const a = document.createElement('a');
+      a.href = opts.url;
+      a.download = opts.fileName;
+      a.target = '_blank';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showToast('دانلود در مرورگر شروع شد', 'success');
+      return true;
+    } catch {
+      showToast('دانلود در این دستگاه پشتیبانی نمی‌شود', 'error');
+      return false;
+    }
+  }
+  function downloadFromModal(
+    url: string,
+    title: string,
+    isSeries: boolean,
+    label: string,
+    quality: string,
+    fileName: string
+  ) {
+    // v1.27: do not hand DownloadManager the playback stream url.
+    // Prefer the node's own download url / a direct file for the
+    // same quality, from the modal's source list.
+    const src = currentSources.find((s: any) => s.url === url) || { url, quality, size: '', score: 0 };
+    const dlUrl = pickDownloadUrl(src as any, currentSources as any);
+    const safe = sanitizeDownloadName(fileName.replace(/\.(mp4|mkv|webm)$/i, ''));
+    const ext = downloadExt(dlUrl);
+    enqueueDownload({
+      url: dlUrl,
+      title,
+      type: isSeries ? 'series' : 'movie',
+      label,
+      quality,
+      fileName: `${safe}.${ext}`,
+    });
+  }
+  function handleDownloadMovieQuality(source: VideoSource) {
+    if (!currentMovie) return;
+    const title = brandFix(movieTitle(currentMovie));
+    const q = normalizeQualityGroup(source.quality);
+    const dlUrl = pickDownloadUrl(source, [source]);
+    enqueueDownload({
+      url: dlUrl,
+      title,
+      type: 'movie',
+      label: title,
+      quality: q,
+      fileName: `${sanitizeDownloadName(title)} - ${q}.${downloadExt(dlUrl)}`,
+    });
+  }
+  function handleDownloadEpisode(url: string, quality: string, sIdx: number, eIdx: number) {
+    if (!currentMovie) return;
+    const title = brandFix(movieTitle(currentMovie));
+    const q = normalizeQualityGroup(quality);
+    const label = `${title} — فصل ${sIdx + 1} قسمت ${eIdx + 1}`;
+    const srcEp = currentSources.find((s: any) => s.url === url) || { url, quality, size: '', score: 0 };
+    const dlUrlEp = pickDownloadUrl(srcEp as any, currentSources as any);
+    enqueueDownload({
+      url: dlUrlEp,
+      title,
+      type: 'series',
+      label,
+      quality: q,
+      fileName: `${sanitizeDownloadName(title)} - S${String(sIdx + 1).padStart(2, '0')}E${String(eIdx + 1).padStart(2, '0')} - ${q}.${downloadExt(dlUrlEp)}`,
+    });
+  }
+  function handleDownloadSeason720(season: any, sIdx: number, episodes: any[]) {
+    if (!currentMovie) return;
+    const title = brandFix(movieTitle(currentMovie));
+    let count = 0;
+    episodes.forEach((ep: any, eIdx: number) => {
+      const rawSources = Array.isArray(ep.sources) ? ep.sources : ep.links || ep.files || [];
+      const sorted = sortByQuality(
+        extractLinks(rawSources).filter((l) => !String(l.quality).includes('تیزر'))
+      );
+      const pick =
+        sorted.find((l) => /720/.test(l.quality)) || sorted[0];
+      if (!pick) return;
+      const q = normalizeQualityGroup(pick.quality);
+      const label = `${title} — فصل ${sIdx + 1} قسمت ${eIdx + 1}`;
+      const dlUrlSeason = pickDownloadUrl(pick, sorted);
+      if (
+        enqueueDownload(
+          {
+            url: dlUrlSeason,
+            title,
+            type: 'series',
+            label,
+            quality: q,
+            fileName: `${sanitizeDownloadName(title)} - S${String(sIdx + 1).padStart(2, '0')}E${String(eIdx + 1).padStart(2, '0')} - ${q}.${downloadExt(dlUrlSeason)}`,
+          },
+          true
+        )
+      ) {
+        count++;
+      }
+    });
+    if (count > 0) showToast(`${count} قسمت فصل ${sIdx + 1} برای دانلود اضافه شد`, 'success');
+    else showToast('لینک 720 برای این فصل یافت نشد', 'error');
+  }
+  function handlePlayDownloaded(dmId: number, title: string) {
+    try {
+      const bridge = (window as any).AndroidPlayer;
+      if (bridge?.playDownloaded) {
+        if (bridge.playDownloaded(dmId)) return;
+      }
+    } catch {
+      // ignore
+    }
+    showToast('پخش فایل دانلودشده ممکن نشد', 'error');
   }
 
   // Global Header Search Input Handler
@@ -718,16 +1078,8 @@ export default function App() {
     }, 380);
   }
 
-  // Filtered Stars for Home & Stars Explorer
-  const filteredStars = useMemo(() => {
-    const q = starSearchQuery.trim().toLowerCase();
-    if (!q) return stars;
-    return stars.filter((s) =>
-      String(s.name || s.title || '')
-        .toLowerCase()
-        .includes(q)
-    );
-  }, [stars, starSearchQuery]);
+  // v1.28: no actor search, so no filteredStars/displayStars.
+  // The all-stars page shows the full stars list directly.
 
   // Watched status, precomputed once per watchedData change.
   // Previously every card scanned ALL watched episode keys on
@@ -997,7 +1349,8 @@ export default function App() {
                       </span>
                     </section>
 
-                    {/* Countries Row */}
+                    {/* Countries Row — v1.18: with a Show All button
+                        that opens the full vertical country list. */}
                     {countries.length > 0 && (
                       <section>
                         <div className="flex items-center justify-between mb-3">
@@ -1014,6 +1367,24 @@ export default function App() {
                             />
                             <span>کشورها</span>
                           </h2>
+                          <button
+                            onClick={() =>
+                              pushRoute({
+                                type: 'list',
+                                kind: 'countries',
+                                title: 'همه کشورها',
+                              })
+                            }
+                            className="shrink-0 inline-flex items-center gap-1 px-3.5 py-1.5 rounded-full text-xs font-extrabold transition-transform active:scale-95 cursor-pointer"
+                            style={{
+                              background: 'var(--surface-2)',
+                              border: '1px solid var(--border)',
+                              color: 'var(--primary-bright)',
+                            }}
+                          >
+                            <span>نمایش همه</span>
+                            <ChevronLeft className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                         <div className="flex gap-3 overflow-x-auto no-scrollbar py-1">
                           {countries.slice(0, 30).map((c, idx) => (
@@ -1061,10 +1432,53 @@ export default function App() {
                       </section>
                     )}
 
-                    {/* Genres Row */}
-                    {genres.length > 0 && (
-                      <section>
-                        <div className="flex items-center justify-between mb-3">
+                    {/* v1.18: the home categories pill row is gone.
+                        In its place: Download Manager + Categories. */}
+                    <section className="grid grid-cols-2 gap-3">
+                      <button
+                        onClick={() => pushRoute({ type: 'downloads' })}
+                        className="flex items-center justify-center gap-2.5 py-4 px-3 rounded-3xl font-extrabold text-sm cursor-pointer active:scale-[0.98] transition-transform shadow-xl"
+                        style={{
+                          background: 'linear-gradient(135deg, var(--primary), var(--accent))',
+                          color: '#fff',
+                          boxShadow: '0 10px 28px rgba(123, 104, 238, 0.35)',
+                        }}
+                      >
+                        <Download className="w-5 h-5" />
+                        <span>دانلود منیجر</span>
+                      </button>
+                      <button
+                        onClick={() =>
+                          pushRoute({
+                            type: 'list',
+                            kind: 'categories',
+                            title: 'همه دسته‌بندی‌ها',
+                          })
+                        }
+                        className="flex items-center justify-center gap-2.5 py-4 px-3 rounded-3xl font-extrabold text-sm cursor-pointer active:scale-[0.98] transition-transform"
+                        style={{
+                          background: 'var(--surface-2)',
+                          border: '1px solid var(--border-strong)',
+                          color: 'var(--text)',
+                        }}
+                      >
+                        <LayoutGrid className="w-5 h-5" style={{ color: 'var(--primary-bright)' }} />
+                        <span>دسته‌بندی‌ها</span>
+                      </button>
+                    </section>
+
+                    {/* Stars / Artists Row — v1.18: no search box
+                        under the heading any more. Search lives only
+                        at the top of the Show All (all-stars) page. */}
+                    {stars.length > 0 && (
+                      <section
+                        className="rounded-3xl p-4 border"
+                        style={{
+                          background: 'var(--surface)',
+                          borderColor: 'var(--border)',
+                        }}
+                      >
+                        <div className="flex items-center justify-between gap-3 mb-3.5">
                           <h2
                             className="text-base sm:text-lg font-extrabold flex items-center gap-2"
                             style={{ color: 'var(--text)' }}
@@ -1076,165 +1490,32 @@ export default function App() {
                                   'linear-gradient(135deg, var(--primary), var(--accent))',
                               }}
                             />
-                            <span>دسته‌بندی‌ها</span>
+                            <span>هنرمندان و بازیگران</span>
                           </h2>
-                        </div>
-                        <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
-                          {genres.slice(0, 35).map((g, idx) => (
-                            <button
-                              key={`genre-${g.id ?? idx}-${idx}`}
-                              onClick={() =>
-                                pushRoute({
-                                  type: 'list',
-                                  kind: 'genre',
-                                  id: g.id,
-                                  title: `ژانر ${brandFix(g.title || '')}`,
-                                })
-                              }
-                              className="px-4 py-2 rounded-full text-xs font-extrabold whitespace-nowrap shrink-0 transition-all active:scale-95 cursor-pointer"
-                              style={{
-                                background: 'var(--surface-2)',
-                                border: '1px solid var(--border)',
-                                color: 'var(--text)',
-                              }}
-                            >
-                              {brandFix(g.title || '')}
-                            </button>
-                          ))}
-                        </div>
-                      </section>
-                    )}
-
-                    {/* Stars / Artists Row WITH Dedicated Search Box */}
-                    {stars.length > 0 && (
-                      <section
-                        className="rounded-3xl p-4 border"
-                        style={{
-                          background: 'var(--surface)',
-                          borderColor: 'var(--border)',
-                        }}
-                      >
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <h2
-                              className="text-base sm:text-lg font-extrabold flex items-center gap-2"
-                              style={{ color: 'var(--text)' }}
-                            >
-                              <span
-                                className="w-1 h-5 rounded-full inline-block"
-                                style={{
-                                  background:
-                                    'linear-gradient(135deg, var(--primary), var(--accent))',
-                                }}
-                              />
-                              <span>هنرمندان و بازیگران</span>
-                            </h2>
-
-                            <button
-                              onClick={() =>
-                                pushRoute({
-                                  type: 'list',
-                                  kind: 'all-stars',
-                                  title: 'جستجو و مشاهده همه هنرمندان',
-                                })
-                              }
-                              className="sm:hidden inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-extrabold cursor-pointer"
-                              style={{
-                                background: 'var(--surface-2)',
-                                border: '1px solid var(--border)',
-                                color: 'var(--primary-bright)',
-                              }}
-                            >
-                              <span>نمایش همه</span>
-                              <ChevronLeft className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-
-                          {/* Artist Search Input + See All Stars */}
-                          <div className="flex items-center gap-2 flex-1 max-w-md">
-                            <div className="relative flex-1">
-                              <input
-                                type="text"
-                                value={starSearchQuery}
-                                onChange={(e) => setStarSearchQuery(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' && starSearchQuery.trim()) {
-                                    pushRoute({
-                                      type: 'list',
-                                      kind: 'star',
-                                      id: '',
-                                      title: starSearchQuery.trim(),
-                                    });
-                                  }
-                                }}
-                                placeholder="جستجوی نام بازیگر یا کارگردان..."
-                                className="w-full py-2 pr-8 pl-7 rounded-full text-xs font-bold outline-none"
-                                style={{
-                                  background: 'var(--surface-solid)',
-                                  border: '1px solid var(--border-strong)',
-                                  color: 'var(--text)',
-                                }}
-                              />
-                              <Search
-                                className="w-3.5 h-3.5 absolute top-1/2 right-2.5 -translate-y-1/2 pointer-events-none"
-                                style={{ color: 'var(--primary-bright)' }}
-                              />
-                              {starSearchQuery && (
-                                <button
-                                  onClick={() => setStarSearchQuery('')}
-                                  className="w-4 h-4 rounded-full absolute top-1/2 left-2 -translate-y-1/2 flex items-center justify-center text-[10px]"
-                                  style={{ color: 'var(--secondary)' }}
-                                >
-                                  ✕
-                                </button>
-                              )}
-                            </div>
-
-                            {starSearchQuery.trim() && (
-                              <button
-                                onClick={() =>
-                                  pushRoute({
-                                    type: 'list',
-                                    kind: 'star',
-                                    id: '',
-                                    title: starSearchQuery.trim(),
-                                  })
-                                }
-                                className="shrink-0 px-3 py-2 rounded-full text-xs font-extrabold text-white cursor-pointer active:scale-95 transition-transform"
-                                style={{
-                                  background:
-                                    'linear-gradient(135deg, var(--primary), var(--accent))',
-                                }}
-                              >
-                                جستجوی آثار
-                              </button>
-                            )}
-
-                            <button
-                              onClick={() =>
-                                pushRoute({
-                                  type: 'list',
-                                  kind: 'all-stars',
-                                  title: 'جستجو و مشاهده همه هنرمندان',
-                                })
-                              }
-                              className="hidden sm:inline-flex items-center gap-1 px-3.5 py-2 rounded-full text-xs font-extrabold shrink-0 cursor-pointer"
-                              style={{
-                                background: 'var(--surface-2)',
-                                border: '1px solid var(--border)',
-                                color: 'var(--primary-bright)',
-                              }}
-                            >
-                              <span>همه هنرمندان</span>
-                              <ChevronLeft className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
+                          <button
+                            onClick={() =>
+                              pushRoute({
+                                type: 'list',
+                                kind: 'all-stars',
+                                title: 'جستجو و مشاهده همه هنرمندان',
+                              })
+                            }
+                            className="inline-flex items-center gap-1 px-3.5 py-2 rounded-full text-xs font-extrabold shrink-0 cursor-pointer"
+                            style={{
+                              background: 'var(--surface-2)',
+                              border: '1px solid var(--border)',
+                              color: 'var(--primary-bright)',
+                            }}
+                          >
+                            <span>نمایش همه</span>
+                            <ChevronLeft className="w-3.5 h-3.5" />
+                          </button>
                         </div>
 
-                        {/* Filtered Stars Horizontal Row */}
-                        {filteredStars.length > 0 ? (
+                        {/* Stars Horizontal Row (full list, no search here) */}
+                        {stars.length > 0 ? (
                           <div className="flex gap-3.5 overflow-x-auto no-scrollbar py-1">
-                            {filteredStars.map((s, idx) => {
+                            {stars.map((s, idx) => {
                               const sName = brandFix(s.name || s.title || 'هنرمند');
                               return (
                                 <div
@@ -1243,7 +1524,7 @@ export default function App() {
                                     pushRoute({
                                       type: 'list',
                                       kind: 'star',
-                                      id: s.id,
+                                      id: s.id ?? s.star_id ?? s.actor_id ?? s.person_id ?? s.cast_id ?? s.slug ?? '',
                                       title: sName,
                                     })
                                   }
@@ -1280,27 +1561,8 @@ export default function App() {
                             })}
                           </div>
                         ) : (
-                          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 py-3 px-4 rounded-2xl" style={{ background: 'var(--surface-2)' }}>
-                            <span className="text-xs font-bold" style={{ color: 'var(--secondary)' }}>
-                              هنرمندی با نام «{starSearchQuery}» در لیست اولیه نبود. می‌خواهید کل آرشیو را برای آثار او بگردیم؟
-                            </span>
-                            <button
-                              onClick={() =>
-                                pushRoute({
-                                  type: 'list',
-                                  kind: 'star',
-                                  id: '',
-                                  title: starSearchQuery.trim(),
-                                })
-                              }
-                              className="px-4 py-2 rounded-full text-xs font-extrabold text-white cursor-pointer"
-                              style={{
-                                background:
-                                  'linear-gradient(135deg, var(--primary), var(--accent))',
-                              }}
-                            >
-                              🔍 نمایش فیلم و سریال‌های {starSearchQuery}
-                            </button>
+                          <div className="py-3 px-4 rounded-2xl text-center text-xs font-bold" style={{ background: 'var(--surface-2)', color: 'var(--secondary)' }}>
+                            هنرمندی در این بخش یافت نشد.
                           </div>
                         )}
                       </section>
@@ -1517,8 +1779,87 @@ export default function App() {
               )}
             </div>
 
-            {/* ALL STARS DIRECTORY & SEARCH */}
-            {currentRoute.kind === 'all-stars' ? (
+            {/* CATEGORIES PAGE (v1.18): every genre, not a slice */}
+            {currentRoute.kind === 'categories' ? (
+              <div className="flex flex-col gap-3">
+                <p className="text-xs font-bold" style={{ color: 'var(--secondary)' }}>
+                  همه دسته‌بندی‌ها ({genres.length} دسته) — روی هر دسته بزنید تا فیلم و سریال‌های کامل آن دسته را ببینید.
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {genres.map((g, idx) => (
+                    <button
+                      key={`cat-${g.id ?? idx}-${idx}`}
+                      onClick={() =>
+                        pushRoute({
+                          type: 'list',
+                          kind: 'genre',
+                          id: g.id,
+                          title: `ژانر ${brandFix(g.title || '')}`,
+                        })
+                      }
+                      className="px-4 py-4 rounded-2xl text-sm font-extrabold cursor-pointer active:scale-95 transition-transform flex items-center justify-between gap-2"
+                      style={{
+                        background: 'var(--surface-2)',
+                        border: '1px solid var(--border)',
+                        color: 'var(--text)',
+                      }}
+                    >
+                      <span className="truncate">{brandFix(g.title || '')}</span>
+                      <ChevronLeft className="w-4 h-4 shrink-0" style={{ color: 'var(--primary-bright)' }} />
+                    </button>
+                  ))}
+                </div>
+                {genres.length === 0 && (
+                  <p className="text-xs font-bold text-center py-10" style={{ color: 'var(--secondary)' }}>
+                    دسته‌بندی‌ای یافت نشد. اتصال را بررسی کنید.
+                  </p>
+                )}
+              </div>
+            ) : currentRoute.kind === 'countries' ? (
+              <div className="flex flex-col gap-2.5">
+                <p className="text-xs font-bold" style={{ color: 'var(--secondary)' }}>
+                  همه کشورها ({countries.length} کشور) — روی هر کشور بزنید تا فیلم و سریال‌های کامل آن کشور را ببینید. لیست را اسکرول کنید.
+                </p>
+                {countries.map((c, idx) => (
+                  <button
+                    key={`allcountry-${c.id ?? idx}-${idx}`}
+                    onClick={() =>
+                      pushRoute({
+                        type: 'list',
+                        kind: 'country',
+                        id: c.id,
+                        title: `فیلم و سریال‌های ${brandFix(c.title || 'کشور')}`,
+                      })
+                    }
+                    className="w-full flex items-center gap-3.5 p-3 rounded-2xl cursor-pointer active:scale-[0.99] transition-transform text-right"
+                    style={{
+                      background: 'var(--surface-2)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    <div
+                      className="w-12 h-12 rounded-full overflow-hidden border-2 shrink-0 flex items-center justify-center"
+                      style={{ borderColor: 'var(--border-strong)', background: 'var(--surface-solid)' }}
+                    >
+                      {c.image ? (
+                        <img src={resolveImageUrl(c.image)} alt={c.title || ''} loading="lazy" decoding="async" referrerPolicy="no-referrer" className="w-full h-full object-cover" />
+                      ) : (
+                        <span className="text-lg">🌍</span>
+                      )}
+                    </div>
+                    <span className="flex-1 text-sm font-extrabold" style={{ color: 'var(--text)' }}>
+                      {brandFix(c.title || '')}
+                    </span>
+                    <ChevronLeft className="w-5 h-5 shrink-0" style={{ color: 'var(--primary-bright)' }} />
+                  </button>
+                ))}
+                {countries.length === 0 && (
+                  <p className="text-xs font-bold text-center py-10" style={{ color: 'var(--secondary)' }}>
+                    کشوری یافت نشد. اتصال را بررسی کنید.
+                  </p>
+                )}
+              </div>
+            ) : currentRoute.kind === 'all-stars' ? (
               <div className="flex flex-col gap-5">
                 <div
                   className="p-4 rounded-3xl border flex flex-col sm:flex-row items-center gap-3"
@@ -1527,56 +1868,22 @@ export default function App() {
                     borderColor: 'var(--border)',
                   }}
                 >
-                  <div className="relative flex-1 w-full">
-                    <input
-                      type="text"
-                      value={starSearchQuery}
-                      onChange={(e) => setStarSearchQuery(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && starSearchQuery.trim()) {
-                          pushRoute({
-                            type: 'list',
-                            kind: 'star',
-                            id: '',
-                            title: starSearchQuery.trim(),
-                          });
-                        }
-                      }}
-                      placeholder="نام هنرمند، بازیگر یا کارگردان را وارد کنید..."
-                      className="w-full py-3 pr-10 pl-4 rounded-2xl text-sm font-bold outline-none"
-                      style={{
-                        background: 'var(--surface-solid)',
-                        border: '1px solid var(--border-strong)',
-                        color: 'var(--text)',
-                      }}
-                    />
-                    <Search
-                      className="w-4 h-4 absolute top-1/2 right-3.5 -translate-y-1/2"
-                      style={{ color: 'var(--primary-bright)' }}
-                    />
-                  </div>
-                  {starSearchQuery.trim() && (
-                    <button
-                      onClick={() =>
-                        pushRoute({
-                          type: 'list',
-                          kind: 'star',
-                          id: '',
-                          title: starSearchQuery.trim(),
-                        })
-                      }
-                      className="w-full sm:w-auto px-6 py-3 rounded-2xl text-xs sm:text-sm font-extrabold text-white cursor-pointer shrink-0"
-                      style={{
-                        background: 'linear-gradient(135deg, var(--primary), var(--accent))',
-                      }}
-                    >
-                      🔍 جستجوی آثار «{starSearchQuery}» در کل سرور
-                    </button>
-                  )}
+                  <span className="text-sm font-extrabold" style={{ color: 'var(--text)' }}>
+                    همه هنرمندان
+                  </span>
+                  <span
+                    className="shrink-0 text-xs font-extrabold px-3 py-2 rounded-full tabular-nums"
+                    style={{
+                      background: 'rgba(123,104,238,0.16)',
+                      color: 'var(--primary-bright)',
+                    }}
+                  >
+                    {stars.length} هنرمند
+                  </span>
                 </div>
 
                 <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-4">
-                  {filteredStars.map((s, idx) => {
+                  {stars.map((s, idx) => {
                     const sName = brandFix(s.name || s.title || 'هنرمند');
                     return (
                       <div
@@ -1585,7 +1892,7 @@ export default function App() {
                           pushRoute({
                             type: 'list',
                             kind: 'star',
-                            id: s.id,
+                            id: s.id ?? s.star_id ?? s.actor_id ?? s.person_id ?? s.cast_id ?? s.slug ?? '',
                             title: sName,
                           })
                         }
@@ -1625,6 +1932,27 @@ export default function App() {
                     );
                   })}
                 </div>
+
+                {/* v1.26: load more stars on scroll (sentinel) or tap. */}
+                <div ref={starSentinelRef} />
+                {(
+                  <div className="flex flex-col items-center gap-2 py-2">
+                    {starHasMore ? (
+                      <button
+                        onClick={handleLoadMoreStars}
+                        disabled={starLoadingMore}
+                        className="inline-flex items-center gap-2 px-7 py-3 rounded-full font-extrabold text-sm text-white active:scale-95 transition-transform cursor-pointer disabled:opacity-60"
+                        style={{ background: 'linear-gradient(135deg, var(--primary), var(--accent))' }}
+                      >
+                        <span>{starLoadingMore ? 'در حال بارگذاری هنرمندان بیشتر…' : 'نمایش هنرمندان بیشتر'}</span>
+                      </button>
+                    ) : (
+                      <p className="text-xs font-bold" style={{ color: 'var(--secondary)' }}>
+                        هنرمند بیشتری یافت نشد.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             ) : listLoading ? (
               <SkeletonGrid count={10} />
@@ -1661,8 +1989,12 @@ export default function App() {
                   })}
                 </div>
 
-                {/* Load More Movies/Series in See All */}
-                {currentRoute.kind === 'section' && (
+                {/* Load More Movies/Series in See All — v1.18: also
+                    for genre and country pages, which load the next
+                    year window for that genre/country. */}
+                {(currentRoute.kind === 'section' ||
+                  currentRoute.kind === 'genre' ||
+                  currentRoute.kind === 'country') && (
                   <div className="flex justify-center mt-8">
                     <button
                       onClick={handleLoadMoreList}
@@ -1713,6 +2045,31 @@ export default function App() {
               );
             }}
             showToast={showToast}
+            isSaved={isSavedForDownload(movieId(currentMovie))}
+            onToggleSave={() => {
+              const res = toggleSavedDownload(currentMovie);
+              setSavedVersion((v) => v + 1);
+              showToast(
+                res.saved
+                  ? 'برای دانلود ذخیره شد — در دانلود منیجر ببینید'
+                  : 'از ذخیره‌شده‌ها حذف شد',
+                'success'
+              );
+            }}
+            onDownloadMovieQuality={handleDownloadMovieQuality}
+            onDownloadEpisode={handleDownloadEpisode}
+            onDownloadSeason720={handleDownloadSeason720}
+          />
+        )}
+
+        {/* VIEW: DOWNLOADS (v1.18) */}
+        {currentRoute.type === 'downloads' && (
+          <DownloadManager
+            onBack={goBack}
+            onOpenDetails={(movie: any) => handleOpenDetails(movieId(movie), movie)}
+            onPlayDownloaded={handlePlayDownloaded}
+            showToast={showToast}
+            refreshSignal={downloadRefresh + savedVersion}
           />
         )}
       </main>
@@ -1739,7 +2096,7 @@ export default function App() {
         />
       )}
 
-      {/* 5. EXTERNAL PLAYER SELECTION MODAL */}
+      {/* 5. PLAYER SELECTION MODAL (v1.19: restored + Download button) */}
       {externalModalData && (
         <div
           onClick={() => setExternalModalData(null)}
@@ -1783,6 +2140,18 @@ export default function App() {
               >
                 <Play className="w-4 h-4 fill-current" />
                 <span>پخش در همین برنامه</span>
+              </button>
+
+              <button
+                onClick={() => handleLaunchPlayerChoice('download')}
+                className="w-full py-3.5 px-4 rounded-2xl font-extrabold text-sm flex items-center justify-center gap-2.5 cursor-pointer active:scale-95 transition-transform"
+                style={{
+                  background: 'linear-gradient(135deg, var(--primary), var(--accent))',
+                  color: '#fff',
+                }}
+              >
+                <Download className="w-4 h-4" />
+                <span>دانلود</span>
               </button>
 
               <button
