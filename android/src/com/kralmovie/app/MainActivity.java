@@ -79,6 +79,14 @@ public class MainActivity extends Activity {
         // worker is currently downloading.
         boolean[] segClaimed;
         volatile boolean stopWorkers;
+        // v1.41 (notification only, transient — never saved to prefs):
+        // fixed timestamp for the progress notification, so every
+        // 1-second update does not look like a brand-new notification
+        // in the shade (the "keeps coming and going" flicker when the
+        // app is in the background), plus throttle state.
+        long notifStartTime;
+        int lastNotifiedPct = -1;
+        long lastNotifiedAt;
     }
     private final ConcurrentHashMap<Long, DirectState> directMap = new ConcurrentHashMap<>();
     private final AtomicLong directIdSeq = new AtomicLong(2000000000L);
@@ -135,6 +143,8 @@ public class MainActivity extends Activity {
             st.url = meta.optString("url", "");
             st.lastUpdate = meta.optLong("lastUpdate", 0);
             st.status = meta.optString("status", "failed");
+            st.notifStartTime = System.currentTimeMillis();
+            st.lastNotifiedPct = -1;
             st.downloaded = meta.optLong("downloaded", 0);
             st.total = meta.optLong("total", 0);
             st.reason = meta.optInt("reason", 0);
@@ -188,11 +198,52 @@ public class MainActivity extends Activity {
     private volatile boolean downloadManagerVisible = false;
     private volatile boolean activityForeground = false;
 
+    // v1.41: one place for notification visibility transitions.
+    // Entering Download Manager in the foreground cancels the
+    // progress notification (the UI shows progress there), instead
+    // of leaving a stale notification in the shade. Leaving to the
+    // background resets the throttle so the next update posts once,
+    // steadily, instead of flickering in and out.
+    private void refreshNotificationVisibility() {
+        try {
+            if (downloadManagerVisible && activityForeground) {
+                android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                if (nm != null) {
+                    for (DirectState s : directMap.values()) {
+                        if ("downloading".equals(s.status)) nm.cancel((int) s.id);
+                    }
+                }
+            } else {
+                for (DirectState s : directMap.values()) {
+                    if ("downloading".equals(s.status)) s.lastNotifiedPct = -1;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void postDownloadProgress(DirectState st) {
-        if (downloadManagerVisible && activityForeground) return;
+        if (downloadManagerVisible && activityForeground) {
+            // UI already shows progress; remove any stale shade copy.
+            try {
+                android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                if (nm != null) nm.cancel((int) st.id);
+            } catch (Throwable ignored) {}
+            st.lastNotifiedPct = -1;
+            return;
+        }
         try {
             createDownloadChannel();
             int pct = st.total > 0 ? (int) Math.min(100, st.downloaded * 100 / st.total) : 0;
+            long now = System.currentTimeMillis();
+            // Throttle: post only when the percent actually changed
+            // and at least 2 seconds passed since the last post.
+            // A fresh notification object every second, each with a
+            // new timestamp, is what made the shade notification
+            // pop in and out on Samsung when the app was backgrounded.
+            if (pct == st.lastNotifiedPct && st.lastNotifiedPct >= 0) return;
+            if (st.lastNotifiedPct >= 0 && now - st.lastNotifiedAt < 2000) return;
+            if (st.notifStartTime <= 0) st.notifStartTime = now;
             String text = pct + "٪ · " + formatDownloadBytes(st.downloaded) + " از " + formatDownloadBytes(st.total);
             androidx.core.app.NotificationCompat.Builder b = new androidx.core.app.NotificationCompat.Builder(this, DownloadService.CHANNEL_ID)
                     .setSmallIcon(android.R.drawable.stat_sys_download)
@@ -200,9 +251,14 @@ public class MainActivity extends Activity {
                     .setContentText(text)
                     .setOngoing(true)
                     .setOnlyAlertOnce(true)
+                    .setSilent(true)
+                    .setShowWhen(false)
+                    .setWhen(st.notifStartTime)
                     .setProgress(100, pct, false);
             android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (nm != null) nm.notify((int) st.id, b.build());
+            st.lastNotifiedPct = pct;
+            st.lastNotifiedAt = now;
         } catch (Throwable ignored) {
         }
     }
@@ -210,7 +266,13 @@ public class MainActivity extends Activity {
     private void postDownloadDone(DirectState st, boolean success) {
         if (downloadManagerVisible && activityForeground) {
             // UI already shows the final state; a notification
-            // here would only duplicate it.
+            // here would only duplicate it. Remove the stale
+            // progress copy instead of leaving it in the shade.
+            try {
+                android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+                if (nm != null) nm.cancel((int) st.id);
+            } catch (Throwable ignored) {}
+            st.lastNotifiedPct = -1;
             return;
         }
         try {
@@ -262,16 +324,25 @@ public class MainActivity extends Activity {
                 if ("downloading".equals(s.status)) { anyRunning = true; break; }
             }
             if (!anyRunning) {
-                try {
-                    Intent stop = new Intent(MainActivity.this, DownloadService.class);
-                    stop.setAction(DownloadService.ACTION_CANCEL);
-                    stop.putExtra("id", -1L);
-                    startService(stop);
-                } catch (Throwable ignored) {}
-                // The service stops itself when its alive map is
-                // empty; the cancel-all intent above is a best-effort
-                // nudge, the per-download cancel already removes it.
-                try { stopService(new Intent(MainActivity.this, DownloadService.class)); } catch (Throwable ignored) {}
+                // v1.41: tell the service, per finished download, to
+                // drop it from its alive map. The old id=-1 intent
+                // never cleared the map, so the service (and its
+                // static 0% notification) stayed alive forever, and
+                // the direct stopService() call then deleted the
+                // just-posted "download complete" notification,
+                // because it shared the download's notification id.
+                // The service now stops itself with stopForeground
+                // (false), so the done notification is kept.
+                for (DirectState s : directMap.values()) {
+                    if (!"downloading".equals(s.status)) {
+                        try {
+                            Intent stop = new Intent(MainActivity.this, DownloadService.class);
+                            stop.setAction(DownloadService.ACTION_CANCEL);
+                            stop.putExtra("id", s.id);
+                            startService(stop);
+                        } catch (Throwable ignored) {}
+                    }
+                }
             }
         } catch (Throwable ignored) {
         }
@@ -1117,6 +1188,8 @@ public class MainActivity extends Activity {
                 st.downloaded = 0;
                 st.total = 0;
                 st.status = "downloading";
+                st.notifStartTime = System.currentTimeMillis();
+                st.lastNotifiedPct = -1;
                 st.reason = 0;
                 st.cancelled = false;
                 directMap.put(st.id, st);
@@ -1248,6 +1321,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void setDownloadManagerVisible(boolean visible) {
             downloadManagerVisible = visible;
+            refreshNotificationVisibility();
         }
 
         @JavascriptInterface
@@ -1273,6 +1347,8 @@ public class MainActivity extends Activity {
                     ua = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36";
                 }
                 st.status = "downloading";
+                st.notifStartTime = System.currentTimeMillis();
+                st.lastNotifiedPct = -1;
                 st.reason = 0;
                 st.cancelled = false;
                 directMap.put(dmId, st);
@@ -1817,6 +1893,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         activityForeground = false;
+        refreshNotificationVisibility();
         super.onPause();
         try {
             if (webView != null) webView.onPause();
@@ -1827,6 +1904,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         activityForeground = true;
+        refreshNotificationVisibility();
         super.onResume();
         try {
             if (webView != null) webView.onResume();

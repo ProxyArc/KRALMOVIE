@@ -1,12 +1,12 @@
 # KRALMOVIE
 
-> **⬇️ دانلود برنامه:** [دانلود KRALMOVIE v1.40 (فایل APK) از بخش Releases](https://github.com/ProxyArc/KRALMOVIE/releases/latest)
+> **⬇️ دانلود برنامه:** [دانلود KRALMOVIE v1.41 (فایل APK) از بخش Releases](https://github.com/ProxyArc/KRALMOVIE/releases/latest)
 
 KRALMOVIE یک برنامه فارسی برای تماشای فیلم و سریال است. فیلم و سریال را انتخاب می‌کنید، کیفیت را انتخاب می‌کنید و داخل خود برنامه تماشا می‌کنید.
 
-آخرین نسخه: **v1.40**
+آخرین نسخه: **v1.41**
 
-## نسخه v1.40 چه چیزی دارد
+## نسخه v1.41 چه چیزی دارد
 
 - پلیر VLC داخل خود برنامه، بدون نیاز به پلیر جدا
 - زیرنویس فارسی داخل فیلم‌ها، با دکمه روشن و خاموش کردن زیرنویس
@@ -38,9 +38,9 @@ KRALMOVIE یک برنامه فارسی برای تماشای فیلم و سری�
 ## دانلود
 
 - **آخرین نسخه:** [صفحه دانلود در Releases](https://github.com/ProxyArc/KRALMOVIE/releases/latest)
-- **دانلود مستقیم v1.40:** [KRALMOVIE-1.40.apk](https://github.com/ProxyArc/KRALMOVIE/releases/download/v1.40/KRALMOVIE-1.40.apk)
+- **دانلود مستقیم v1.41:** [KRALMOVIE-1.41.apk](https://github.com/ProxyArc/KRALMOVIE/releases/download/v1.41/KRALMOVIE-1.41.apk)
 
-**نصب مهم:** اگر نسخه قدیمی ۷۶۶ کیلوبایتی را دارید، اول آن را کامل پاک کنید و بعد v1.40 را نصب کنید، وگرنه دو برنامه KRALMOVIE روی گوشی می‌ماند.
+**نصب مهم:** اگر نسخه قدیمی ۷۶۶ کیلوبایتی را دارید، اول آن را کامل پاک کنید و بعد v1.41 را نصب کنید، وگرنه دو برنامه KRALMOVIE روی گوشی می‌ماند.
 
 ## سورس پروژه
 

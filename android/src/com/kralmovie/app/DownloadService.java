@@ -65,18 +65,26 @@ public class DownloadService extends Service {
         if (ACTION_CANCEL.equals(action)) {
             if (id > 0) {
                 alive.remove(id);
-                try {
-                    NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-                    if (nm != null) nm.cancel((int) id);
-                } catch (Throwable ignored) {}
+                // v1.41: do NOT cancel the download's notification
+                // here. MainActivity already cancels it on delete,
+                // and cancelling here deleted the just-posted
+                // "download complete" notification, because it shares
+                // the download's notification id.
             }
             if (alive.isEmpty()) {
-                try { stopForeground(true); } catch (Throwable ignored) {}
+                // stopForeground(false): drop foreground status but
+                // KEEP the notification, so a done notification
+                // posted by MainActivity stays in the shade.
+                try { stopForeground(false); } catch (Throwable ignored) {}
                 stopSelf();
             }
             return START_NOT_STICKY;
         }
         if (id <= 0) return START_NOT_STICKY;
+        // v1.41: if this download is already kept alive, do not
+        // re-post the static 0% notification — that overwrote the
+        // real progress notification and made it jump back to 0%.
+        if (alive.containsKey(id)) return START_NOT_STICKY;
         String title = intent.getStringExtra("title");
         if (title == null || title.isEmpty()) title = "در حال دانلود";
         alive.put(id, title);
@@ -87,6 +95,7 @@ public class DownloadService extends Service {
                     .setContentText("در حال دانلود…")
                     .setOngoing(true)
                     .setOnlyAlertOnce(true)
+                    .setSilent(true)
                     .setProgress(100, 0, false)
                     .build();
             startForeground((int) id, n);
